@@ -1,3 +1,4 @@
+# DEPRECATED: bead-coupled, scheduled for replacement by agtx integration.
 """harbor-bead-runner: the wrapper that runs INSIDE a tmux pane for one bead.
 
 The harbor daemon (or `harbor run-bead`) launches this entry point inside a

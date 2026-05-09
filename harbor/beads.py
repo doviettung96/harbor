@@ -1,3 +1,4 @@
+# DEPRECATED: bead-coupled, scheduled for replacement by agtx integration.
 """Subprocess wrapper for the `br` CLI used by the daemon and the runner.
 
 We deliberately stay thin: `br` is the source of truth for bead state, harbor

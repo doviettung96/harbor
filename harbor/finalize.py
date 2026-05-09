@@ -1,3 +1,4 @@
+# DEPRECATED: bead-coupled, scheduled for replacement by agtx integration.
 """Epic finalize step — Phase 2.5 of harbor.
 
 After `run_epic`'s main loop drains, harbor runs two synthetic beads through

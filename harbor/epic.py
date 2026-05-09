@@ -1,3 +1,4 @@
+# DEPRECATED: bead-coupled, scheduled for replacement by agtx integration.
 """Epic runner — Phase 2 of harbor.
 
 `run_epic` polls `br ready --parent <epic-id>` and runs each ready descendant

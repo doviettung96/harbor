@@ -1,3 +1,4 @@
+# DEPRECATED: bead-coupled, scheduled for replacement by agtx integration.
 """Library wrapper around `scripts/shared/agent_mail.py`.
 
 We import the module directly (not via subprocess) so harbor can call into

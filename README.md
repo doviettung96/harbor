@@ -1,36 +1,90 @@
 # Harbor
 
-Harbor is a small Python runner that drives beads epics to completion by spawning one tmux pane per bead. It replaces the session-as-coordinator role of `swarm-epic`, so a long epic does not exhaust the chat session's context window. One process watches tmux, polls `br ready`, and writes the same `state.json` / `STATE.md` / Agent Mail surfaces the existing flow already uses — so it coexists with `swarm-epic` (the Agent Mail epic-lock arbitrates).
+Harbor is two things in one repo:
 
-See `C:\Users\Admin\.claude\plans\the-current-workflow-has-cozy-harbor.md` for the design.
+1. **A Python orchestrator** (`harbor/`) for running coding-agent sessions in tmux panes. Originally built to drive beads epics; today, the agent-per-task work is delegated to [agtx](https://github.com/fynnfluegge/agtx) and harbor's role is being refocused (webui dashboard for agtx tasks; tmux/psmux fallbacks; bead-coupled modules are deprecated, not yet removed).
+
+2. **An agtx-style workflow template** (`skills/`, `scripts/`, `.agtx/`) for game-reverse work. brainstorm → sweep → one-agent-per-task, with **explicit per-task acceptance criteria** that the worker enforces via `build-and-test`. Designed for Windows + a working tmux build. Supports per-task game-RE runtime targeting (emulator, device, game window).
+
+The two parts share one repo because harbor's webui is the natural future home for the agtx dashboard, and harbor's tmux orchestrator is the fallback for any flow agtx doesn't cover.
+
+## Quick Start (the agtx-style workflow)
+
+```bash
+# 1. Install agtx and register its MCP server with your agent
+agtx trust && agtx
+claude mcp add agtx -- agtx mcp-serve
+
+# 2. Configure this repo's runtime target (only needed for non-local targets)
+python scripts/shared/target_runtime.py status
+python scripts/shared/target_runtime.py target set-device \
+  --id=127.0.0.1:5555 --kind=adb \
+  --probe-command="adb -s 127.0.0.1:5555 get-state"
+
+# 3. Brainstorm + sweep into agtx tasks (use the customized sweep)
+#    /agtx:brainstorm in your agent — explore freely, no code yet
+#    /agtx-sweep-with-acceptance — the worker, three questions per task
+
+# 4. Move a task forward in agtx; a worker agent picks it up in its own
+#    tmux window + git worktree. The worker uses agtx-task-worker → agtx-task-verify.
+```
+
+## Workflow Skills
+
+| Skill | Purpose |
+|---|---|
+| `agtx-sweep-with-acceptance` | Fork of agtx-sweep that asks 3 numbered acceptance questions per task and embeds answers as `## Acceptance Criteria` / `## Verification Probes` / `## Runtime Target` headers in the task description. |
+| `agtx-task-worker` | Per-task worker for an agtx-spawned tmux session. Parses the three headers, does the work, hands off to verify. |
+| `agtx-task-verify` | Runs `## Verification Probes` via `target-runtime-exec` with hard-block on any failure. Writes failure summaries to `<worktree>/.agtx/execute.md`. |
+| `runtime-target-config` | Interactive setup for `.agtx/runtime-target.json` (mode + target.kind + emulator/device/game_window subobject + probe_command). |
+| `build-and-test` | Generic discovery-based test runner; ALSO reads task-scoped probes from the active agtx task description. |
+| `target-runtime-exec` | Routes runtime-dependent commands through `scripts/shared/target_runtime.py` so `target.kind` and probes are honored. |
+| `brainstorming`, `verification-before-completion`, `systematic-debugging`, `writing-plans` | Carried over from the bead-era template; useful regardless of task tracker. |
+
+## Runtime Target
+
+`.agtx/runtime-target.json` is the source of truth for "where commands run" and "what they target." Schema:
+
+```json
+{
+  "version": 1,
+  "mode": "local",
+  "target": {
+    "kind": "device",
+    "device": { "id": "127.0.0.1:5555", "kind": "adb", "transport": "tcp" },
+    "probe_command": "adb -s 127.0.0.1:5555 get-state"
+  }
+}
+```
+
+See `.agtx/runtime-target.example.json` for a fully-populated example targeting LDPlayer + Blue Archive (JP).
+
+When `target.kind != local`, the worker runs the probe before any command and refuses to proceed if it fails. Workers can write a worktree-local `<worktree>/.agtx/runtime-target.json` to override per-task without touching the repo default.
+
+## The Harbor Python Package
+
+`harbor/` is the original orchestrator. Several modules are bead-coupled and marked deprecated:
+
+- `beads.py`, `epic.py`, `runner.py`, `mail.py`, `finalize.py`
+
+These remain in the codebase but are not used by the agtx-style workflow. The non-deprecated pieces (tmux, state, prompt, agent, orchestrator core, verify, webui) are still useful and are the candidates for the agtx-dashboard rebuild.
 
 ## Prerequisites
 
 - Python 3.10+
-- `tmux` on PATH — macOS/Linux: stock `brew install tmux` / `apt install tmux`. Windows: see [`docs/WINDOWS_TMUX.md`](docs/WINDOWS_TMUX.md) (`marlocarlo.psmux` has a broken `attach`; install `arndawg.tmux-windows` instead).
-- `br` (the beads tracker) on PATH
-- An agent CLI: `codex` or `claude`
-- One shared editable install from the workflow template checkout
+- A working `tmux` on PATH (Windows: install a working build — psmux is no longer recommended; the original psmux notes are in `docs/WINDOWS_TMUX.md` for historical reference)
+- `agtx` installed and trusted in this repo
+- An agent CLI (`codex`, `claude`)
 
 ## Install
 
-Install Harbor once from the template checkout:
-
 ```bash
-python -m pip install -e <template>/harbor
+python -m pip install -e .
 ```
 
-That install exposes `harbor` on PATH for every project directory and keeps
-all downstream repos on the current template Harbor code without copying
-`harbor/` into each repo. Verify from any repo root:
-
-```bash
-harbor --help
-```
-
-`harbor.yml` is optional. If a repo does not provide one, Harbor uses its
-built-in defaults; add `harbor.yml` only when a project needs local overrides.
+This exposes the `harbor` and `harbor-bead-runner` entry points. `harbor-bead-runner` is bead-coupled and will be removed; do not use it for new work.
 
 ## Status
 
-Phase 1 (single-bead MVP) is in progress. See beads `awt-zmq.*` for the slice plan.
+- Workflow template: in active development.
+- Harbor python package: stable on the non-bead modules; bead-coupled modules slated for removal once the agtx integration is verified end-to-end.
