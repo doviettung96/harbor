@@ -16,6 +16,7 @@ Your job: pick up the task, do the work, then verify against the task's own acce
    - The branch name pattern `task/<id>` if the env var is missing
    - Ask the user if neither resolves
 2. Call `mcp__agtx__get_task(task_id)`. Confirm the task is in `Running` (or `Planning` if you were spawned for the planning phase).
+3. Read `.agtx/shared-instructions.md` if it exists. Treat it as per-task worker guidance, especially for exclusive resources such as the Android emulator/device assigned to this task. Do not ask the user to choose a device when this file already names one; if it is unavailable, classify the blocker as `env`.
 
 ## Parse the Three Headers
 
@@ -24,6 +25,7 @@ The task description carries three fixed sections from the sweep step:
 - `## Acceptance Criteria` — bullets describing what success looks like.
 - `## Verification Probes` — one shell command per bullet line. These run via `target-runtime-exec`.
 - `## Runtime Target` — kind + subobject. May say `default` (use repo `.agtx/runtime-target.json`) or override the repo default.
+- `## Worker Instructions` — optional per-task instructions such as the exact Android device to claim for build/test commands.
 
 Parse each by header. If any of the three is missing, stop and `mcp__agtx__move_task(task_id, action="escalate_to_user")` with a short note explaining which section is missing. Do not attempt the work without all three.
 

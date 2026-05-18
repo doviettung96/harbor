@@ -14,6 +14,10 @@ import pytest
 # Path to the real shared script we want to wrap
 TEMPLATE_ROOT = Path(__file__).resolve().parents[2]
 SHARED_AGENT_MAIL = TEMPLATE_ROOT / "scripts" / "shared" / "agent_mail.py"
+pytestmark = pytest.mark.skipif(
+    not SHARED_AGENT_MAIL.exists(),
+    reason=f"deprecated agent_mail helper not present: {SHARED_AGENT_MAIL}",
+)
 
 
 @pytest.fixture

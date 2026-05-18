@@ -1,0 +1,54 @@
+<article class="planning-session-detail" data-planning-session="{{ session_name }}">
+  <div class="drawer-title">
+    <div>
+      <h1>Manual Session</h1>
+      <div class="muted">
+        <code>{{ session_name }}</code>
+        {% if live_session %}
+          <span class="pill ok">tmux</span>
+        {% else %}
+          <span class="pill warn">not live</span>
+        {% endif %}
+      </div>
+    </div>
+    {% if drawer %}
+      <button type="button" class="drawer-close" data-drawer-close aria-label="Minimize manual session drawer">Minimize</button>
+    {% endif %}
+  </div>
+
+  <div class="panel">
+    <h2>tmux session <code style="text-transform:none;letter-spacing:0;font-size:12px;">{{ session_name }}</code></h2>
+    <div class="panel-body">
+      {% if live_session %}
+        <div
+          class="terminal-shell"
+          data-terminal-root
+          data-live="1"
+          data-ws-url="/projects/{{ project.project.id }}/ws/planning/{{ session_name }}"
+        >
+          <div class="terminal-status muted" data-terminal-status>connecting...</div>
+          <div class="xterm-host" data-terminal-host></div>
+        </div>
+      {% else %}
+        <p class="muted" style="margin-top:0;">Harbor cannot see this manual tmux session right now.</p>
+        <pre class="pane-capture">{{ pane_capture }}</pre>
+      {% endif %}
+
+      <details class="terminal-fallback" {% if not live_session %}open{% endif %}>
+        <summary class="muted">Attach fallback</summary>
+        <div class="attach" style="margin-top:8px;">
+          <code>{{ attach_command }}</code>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Actions</h2>
+    <div class="panel-body">
+      <form method="post" action="/projects/{{ project.project.id }}/planning-sessions/{{ session_name }}/kill" class="inline">
+        <button type="submit" class="danger">Kill session</button>
+      </form>
+    </div>
+  </div>
+</article>

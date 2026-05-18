@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}harbor settings{% endblock %}
+{% block crumbs %}<a href="/">dashboard</a> / settings{% endblock %}
+{% block content %}
+
+<div class="panel">
+  <h2>Shared runtime config</h2>
+  <div class="panel-body">
+    <p class="muted" style="margin-top: 0;">Live settings apply to all projects and are persisted globally.</p>
+    <p><code>{{ runtime.path }}</code></p>
+    <form method="post" action="/settings/runtime">
+      <label class="muted" for="agent_command">Planning and worker session command</label>
+      <input
+        id="agent_command"
+        name="agent_command"
+        type="text"
+        value="{{ agent_command_text }}"
+        placeholder="codex"
+        style="display: block; width: 100%; margin: 4px 0 10px;"
+      >
+      <p class="muted" style="margin-top: -4px;">
+        Effective planning command: <code>{{ effective_agent_command_text }}</code>
+        {% if cli_agent_override %}
+          <span class="pill warn">CLI override active</span>
+        {% endif %}
+      </p>
+
+      <label class="muted" for="plugin">Workflow plugin</label>
+      <input
+        id="plugin"
+        name="plugin"
+        type="text"
+        value="{{ plugin_text }}"
+        placeholder="agtx-workflow-template"
+        style="display: block; width: 100%; margin: 4px 0 10px;"
+      >
+
+      <label class="muted" for="default_shell">Tmux default shell</label>
+      <input
+        id="default_shell"
+        name="default_shell"
+        type="text"
+        value="{{ default_shell_text }}"
+        placeholder="C:/Program Files/Git/bin/bash.exe"
+        style="display: block; width: 100%; margin: 4px 0 10px;"
+      >
+
+      <label class="muted" for="prompt_append">Prompt append</label>
+      <textarea id="prompt_append" name="prompt_append" spellcheck="false">{{ cfg.agtx_prompt_append }}</textarea>
+      <div style="margin-top: 10px;">
+        <button type="submit">Save runtime settings</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>Task worker options</h2>
+  <div class="panel-body">
+    <p class="muted" style="margin-top: 0;">
+      Worker instructions remain task-scoped. Open a task and use its Worker Instructions box before moving it to Planning or Running.
+    </p>
+    <p class="muted">
+      Harbor saves that text into the task description as <code>## Worker Instructions</code>, appends it only to that task's worker prompts, and writes it into that task worktree as <code>.agtx/shared-instructions.md</code>.
+    </p>
+  </div>
+</div>
+
+{% endblock %}

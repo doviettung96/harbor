@@ -1,0 +1,76 @@
+{% if notifications %}
+  <div class="panel">
+    <h2>Notifications</h2>
+    <div class="panel-body">
+      <table>
+        <thead><tr><th>message</th><th>created</th></tr></thead>
+        <tbody>
+          {% for n in notifications %}
+            <tr>
+              <td>{{ n.message }}</td>
+              <td><time data-utc="{{ n.created_at }}">{{ n.created_at }}</time></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endif %}
+
+<div class="board-toolbar">
+  <form method="post" action="/projects/{{ project.project.id }}/planning-sessions" class="inline">
+    <button type="submit">New Manual Session</button>
+  </form>
+</div>
+
+{% if planning_sessions %}
+  <section class="planning-strip" aria-label="Manual sessions">
+    <div class="planning-strip-head">
+      <h2>Manual Sessions</h2>
+      <span class="count">{{ planning_sessions|length }}</span>
+    </div>
+    <div class="planning-session-list">
+      {% for s in planning_sessions %}
+        <a
+          class="planning-session-link {% if open_planning and open_planning.session_name == s.session_name %}active{% endif %}"
+          href="/projects/{{ project.project.id }}?planning={{ s.session_name }}"
+          data-planning-session="{{ s.session_name }}"
+          data-partial-url="/projects/{{ project.project.id }}/_partials/planning/{{ s.session_name }}"
+        >
+          <span class="title">{{ s.session_name }}</span>
+          <span class="pill ok">tmux</span>
+        </a>
+      {% endfor %}
+    </div>
+  </section>
+{% endif %}
+
+<div class="kanban" aria-label="Task board">
+  {% for col in columns %}
+    <section class="col" aria-labelledby="col-{{ col.key }}">
+      <h2 id="col-{{ col.key }}">
+        <span>{{ col.title }}</span>
+        <span class="count">{{ col.tasks|length }}</span>
+      </h2>
+      <div class="col-body">
+        {% for task in col.tasks %}
+          <a
+            class="card task-card"
+            href="/projects/{{ project.project.id }}?task={{ task.id }}"
+            data-task-id="{{ task.id }}"
+            data-partial-url="/_partials/task/{{ task.id }}"
+          >
+            <span class="title">{{ task.title }}</span>
+            <span class="meta">
+              <span class="agent">{{ task.agent }}</span>
+              {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
+              {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
+            </span>
+          </a>
+        {% else %}
+          <div class="empty-col">No tasks</div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+</div>

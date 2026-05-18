@@ -16,8 +16,10 @@ Read the local project files before running commands:
 - `package.json`
 - `Makefile`
 - CI configuration, if present
+- `.agtx/shared-instructions.md`, if present
 
 Prefer explicit project scripts over guessed commands. If more than one plausible stack exists, choose the smallest check set that validates the files changed in the current work and state the reason.
+If `.agtx/shared-instructions.md` contains per-task verification or Android device policy, honor it before asking the user which emulator/device to use. If the named device is unavailable, emit `blocked classification=env` and include the device listing or probe output.
 
 Files:
 - (no files modified - verification only)
@@ -30,6 +32,7 @@ Verify:
 
 1. Inspect `git status --short` and the changed paths.
 2. Read the build/test configuration files listed above.
+   Also read `.agtx/shared-instructions.md` if it exists.
 3. If invoked under an agtx task worktree, fetch the task and parse task-scoped probes (see next section).
 4. Identify the exact repo-default commands appropriate for the changed areas.
 5. Run all commands (repo-default + task-scoped) from the repository root, each via `target-runtime-exec` so the configured runtime target is honored.
@@ -45,6 +48,7 @@ When the worktree corresponds to an agtx task (the env var `AGTX_TASK_ID` is set
 2. Parse the description for two fixed sections:
    - `## Verification Probes` — one shell command per bullet line. Each line is a standalone command.
    - `## Runtime Target` — emulator/device/game-window override (if present). Write a worktree-local override at `<worktree>/.agtx/runtime-target.json` before running probes if this differs from the repo default.
+   - `## Worker Instructions` — optional per-task guidance such as which Android device/emulator this task owns. Harbor also writes this to `.agtx/shared-instructions.md`.
 3. Run each probe command via `target-runtime-exec` so it inherits the configured runtime target and probe gating.
 4. **Hard block.** If any probe exits non-zero, do NOT report success. Append the failing command, exit code, and stderr tail to `<worktree>/.agtx/execute.md` with a UTC timestamp, then emit `blocked classification=acceptance`. The task stays in the agtx Running column until the probes pass.
 5. Repo-default tests still run. Task-scoped probes are additive, not a replacement.

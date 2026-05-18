@@ -7,6 +7,7 @@ per-bead in the webview.
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -111,6 +112,20 @@ class Config:
     # POSIX-style command substitution (`"$(cat 'path')"`) without fighting
     # PowerShell's native-arg-pass quirks. None means "use tmux's default".
     default_shell: str | None = None
+    # Default agent invocation for the agtx webview, read from harbor.yml's
+    # `agtx.agent_command`. When set, the webview uses this when no CLI
+    # `--agent-command` was passed. The CLI flag still wins over this value
+    # so a one-off override is always possible. Tuple form to match
+    # TransitionConfig.agent_command.
+    agtx_agent_command: tuple[str, ...] | None = None
+    # Workflow plugin to use for phase commands/prompts/auto-dismiss. Read
+    # from `agtx.plugin` in harbor.yml; the CLI `--plugin` flag overrides.
+    # Can be a plain plugin name (searched in <repo>/plugins/, .agtx/plugins/,
+    # ~/.config/agtx/plugins/) or a direct path to plugin.toml.
+    agtx_plugin: str | None = None
+    # Free-form repo-level instructions appended to every agtx phase prompt and
+    # written into each task worktree for skills to read later.
+    agtx_prompt_append: str = ""
 
     def get(self, name: str | None) -> AgentProfile:
         key = name or self.default_profile
@@ -166,10 +181,47 @@ def _profile_from_dict(name: str, raw: dict[str, Any]) -> AgentProfile:
     )
 
 
+def _parse_agtx_agent_command(raw: Any) -> tuple[str, ...] | None:
+    """Accept either a shell-quoted string or a list of strings.
+
+    `harbor.yml`:
+        agtx:
+          agent_command: "codex -m gpt-5.5 --reasoning-effort high"
+        # OR
+        agent_command: [codex, -m, gpt-5.5, --reasoning-effort, high]
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        import shlex
+        argv = shlex.split(raw)
+        return tuple(argv) if argv else None
+    if isinstance(raw, (list, tuple)):
+        argv = [str(item) for item in raw if str(item).strip()]
+        return tuple(argv) if argv else None
+    raise ValueError(
+        f"agtx.agent_command must be a string or list of strings, got {type(raw).__name__}"
+    )
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
-    """Load harbor.yml from `path`, else look for ./harbor.yml, else use built-ins."""
+    """Load harbor.yml.
+
+    Behavior:
+      - `path` is an existing file → load it.
+      - `path` is given but doesn't exist → return built-in defaults (no cwd lookup).
+      - `path` is None → look at ./harbor.yml (legacy convenience); if absent,
+        built-in defaults.
+
+    The "path given but missing → built-ins" branch is important for callers
+    like `create_app(repo_root)` that always pass a `<repo>/harbor.yml` path
+    — we don't want them to silently pick up an unrelated harbor.yml from
+    the user's current working directory.
+    """
     if path is not None:
         p = Path(path)
+        if not p.exists():
+            p = None  # type: ignore[assignment]
     else:
         candidate = Path.cwd() / "harbor.yml"
         p = candidate if candidate.exists() else None  # type: ignore[assignment]
@@ -203,10 +255,25 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     default_shell = data.get("default_shell")
     if default_shell is None:
         default_shell = _auto_detect_default_shell()
+    agtx_section = data.get("agtx") or {}
+    agtx_agent_command = _parse_agtx_agent_command(agtx_section.get("agent_command"))
+    agtx_plugin = agtx_section.get("plugin")
+    if agtx_plugin is not None and not isinstance(agtx_plugin, str):
+        raise ValueError(
+            f"agtx.plugin must be a string (plugin name or path), got {type(agtx_plugin).__name__}"
+        )
+    agtx_prompt_append = agtx_section.get("prompt_append") or ""
+    if not isinstance(agtx_prompt_append, str):
+        raise ValueError(
+            f"agtx.prompt_append must be a string, got {type(agtx_prompt_append).__name__}"
+        )
     return Config(
         profiles=profiles,
         default_profile=default,
         default_shell=default_shell,
+        agtx_agent_command=agtx_agent_command,
+        agtx_plugin=agtx_plugin,
+        agtx_prompt_append=agtx_prompt_append,
     )
 
 
@@ -245,6 +312,15 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
     }
     if cfg.default_shell is not None:
         data["default_shell"] = cfg.default_shell
+    agtx: dict[str, Any] = {}
+    if cfg.agtx_agent_command:
+        agtx["agent_command"] = list(cfg.agtx_agent_command)
+    if cfg.agtx_plugin:
+        agtx["plugin"] = cfg.agtx_plugin
+    if cfg.agtx_prompt_append:
+        agtx["prompt_append"] = cfg.agtx_prompt_append
+    if agtx:
+        data["agtx"] = agtx
     return data
 
 
@@ -269,6 +345,48 @@ def write_config(path: str | os.PathLike[str], cfg: Config, *, backup: bool = Tr
     finally:
         if tmp.exists():
             tmp.unlink()
+
+
+def harbor_config_dir() -> Path:
+    """Return Harbor's global user config directory."""
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "harbor" / "config"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "harbor"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "harbor"
+
+
+def global_runtime_config_path() -> Path:
+    """Path to the shared live Harbor runtime config."""
+    return harbor_config_dir() / "runtime.yml"
+
+
+def load_runtime_config(path: str | os.PathLike[str] | None = None) -> Config:
+    """Load the shared live runtime config.
+
+    The global config wins on startup. If it is absent, return built-in defaults
+    without looking at the current working directory or any project harbor.yml.
+    """
+    p = Path(path) if path is not None else global_runtime_config_path()
+    if p.exists():
+        return load_config(p)
+    return load_config(p)
+
+
+def write_runtime_config(
+    cfg: Config,
+    path: str | os.PathLike[str] | None = None,
+    *,
+    backup: bool = True,
+) -> Path:
+    """Persist the shared live runtime config and return its path."""
+    p = Path(path) if path is not None else global_runtime_config_path()
+    write_config(p, cfg, backup=backup)
+    return p
 
 
 def load_issue_prefix(repo_root: str | os.PathLike[str]) -> str | None:

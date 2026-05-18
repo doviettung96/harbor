@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Track project - harbor{% endblock %}
+{% block crumbs %}<a href="/">dashboard</a> / <span>track project</span>{% endblock %}
+{% block content %}
+
+<div class="panel">
+  <h2>Browse folders</h2>
+  <div class="panel-body">
+    {% if error %}
+      <div class="pill err" style="margin-bottom: 10px;">{{ error }}</div>
+    {% endif %}
+
+    <form method="get" action="/projects/init/browse" style="display: flex; gap: 8px; margin-bottom: 12px;">
+      <input type="text" name="path" value="{{ current_path }}" style="flex: 1;">
+      <button type="submit">Open</button>
+    </form>
+
+    {% if drives %}
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;">
+        {% for drive in drives %}
+          <a class="btn" href="/projects/init/browse?path={{ drive|urlencode }}">{{ drive }}</a>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    <form method="post" action="/projects/init/browse/register" style="display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; margin-bottom: 14px;">
+      <input type="hidden" name="project_path" value="{{ current_path }}">
+      <input type="text" name="project_name" placeholder="Name (optional)">
+      <button type="submit">Track this folder</button>
+    </form>
+
+    <div class="panel" style="margin-bottom: 0;">
+      <h2 style="display:flex;justify-content:space-between;gap:12px;">
+        <span><code style="text-transform:none;letter-spacing:0;font-size:12px;">{{ current_path }}</code></span>
+        {% if parent_path %}
+          <a href="/projects/init/browse?path={{ parent_path|urlencode }}">Up</a>
+        {% endif %}
+      </h2>
+      <div class="panel-body" style="padding: 0;">
+        {% if entries %}
+          <table>
+            <tbody>
+              {% for entry in entries %}
+                <tr>
+                  <td><a href="/projects/init/browse?path={{ entry.path|urlencode }}">{{ entry.name }}</a></td>
+                  <td><code>{{ entry.path }}</code></td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty">No child folders</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

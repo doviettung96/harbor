@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harbor.agent import AgentProfile, Config, load_config
+from harbor.agent import AgentProfile, Config, config_to_dict, load_config
 
 
 def test_render_argv_substitutes_placeholders():
@@ -87,6 +87,100 @@ def test_load_config_user_overrides(tmp_path: Path):
     # Built-ins still present (thorough, claude-opus, balanced)
     assert "thorough" in cfg.profiles
     assert "claude-opus" in cfg.profiles
+
+
+def test_agtx_agent_command_from_yaml_string(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  agent_command: \"codex -m gpt-5.5 --reasoning-effort high\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert cfg.agtx_agent_command == ("codex", "-m", "gpt-5.5", "--reasoning-effort", "high")
+
+
+def test_agtx_agent_command_from_yaml_list(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  agent_command:\n"
+        "    - codex\n"
+        "    - -m\n"
+        "    - gpt-5.5\n"
+        "    - --reasoning-effort\n"
+        "    - high\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert cfg.agtx_agent_command == ("codex", "-m", "gpt-5.5", "--reasoning-effort", "high")
+
+
+def test_agtx_agent_command_absent_returns_none(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("default_profile: balanced\n", encoding="utf-8")
+    cfg = load_config(yml)
+    assert cfg.agtx_agent_command is None
+
+
+def test_agtx_plugin_from_yaml(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n  plugin: agtx-workflow-template\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert cfg.agtx_plugin == "agtx-workflow-template"
+
+
+def test_agtx_plugin_absent(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("default_profile: balanced\n", encoding="utf-8")
+    cfg = load_config(yml)
+    assert cfg.agtx_plugin is None
+
+
+def test_agtx_plugin_rejects_non_string(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("agtx:\n  plugin: [bad, list]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="agtx.plugin must be a string"):
+        load_config(yml)
+
+
+def test_agtx_prompt_append_from_yaml(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  prompt_append: |\n"
+        "    Android verification policy:\n"
+        "    - Use emulator-5554 unless the task says otherwise.\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert "Use emulator-5554" in cfg.agtx_prompt_append
+
+
+def test_agtx_prompt_append_rejects_non_string(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("agtx:\n  prompt_append: [bad, list]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="agtx.prompt_append must be a string"):
+        load_config(yml)
+
+
+def test_config_to_dict_includes_agtx_prompt_append(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  agent_command: codex\n"
+        "  plugin: agtx-workflow-template\n"
+        "  prompt_append: Use emulator-5554 for Android checks.\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    data = config_to_dict(cfg)
+    assert data["agtx"]["agent_command"] == ["codex"]
+    assert data["agtx"]["plugin"] == "agtx-workflow-template"
+    assert data["agtx"]["prompt_append"] == "Use emulator-5554 for Android checks."
 
 
 def test_load_config_rejects_unknown_default(tmp_path: Path):

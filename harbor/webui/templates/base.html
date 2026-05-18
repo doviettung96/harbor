@@ -6,33 +6,72 @@
   <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
   <style>
     :root {
-      --bg: #0e1116;
-      --panel: #161b22;
-      --border: #30363d;
+      --bg: #0f1115;
+      --panel: #171b21;
+      --panel2: #1f242c;
+      --border: #343b45;
       --fg: #e6edf3;
-      --muted: #7d8590;
+      --muted: #8b949e;
       --accent: #58a6ff;
       --ok: #3fb950;
       --warn: #d29922;
       --err: #f85149;
-      --code: #1f242c;
+      --code: #232932;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
       font: 14px/1.45 -apple-system, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-      background: var(--bg); color: var(--fg);
+      background: var(--bg);
+      color: var(--fg);
     }
+    a { color: var(--accent); text-decoration: none; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: 310px 1fr; }
+    aside {
+      border-right: 1px solid var(--border);
+      background: var(--panel);
+      padding: 14px;
+      overflow: auto;
+    }
+    .brand { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .brand h1 { margin: 0; font-size: 18px; }
+    .settings-link { color: var(--muted); }
+    .runtime-box {
+      border: 1px solid var(--border);
+      background: var(--panel2);
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 14px;
+    }
+    .runtime-box h2, .project-tree h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .project-tree { display: flex; flex-direction: column; gap: 8px; }
+    .project-item {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--panel2);
+      padding: 9px;
+    }
+    .project-item.selected { border-color: var(--accent); }
+    .project-title { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .project-name { font-weight: 600; overflow-wrap: anywhere; }
+    .project-path { margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+    .project-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
     header {
       padding: 14px 24px;
       border-bottom: 1px solid var(--border);
-      display: flex; align-items: baseline; gap: 18px;
+      display: flex;
+      align-items: baseline;
+      gap: 18px;
       background: var(--panel);
     }
-    header h1 { margin: 0; font-size: 18px; }
     header .crumbs { color: var(--muted); }
-    header a { color: var(--accent); text-decoration: none; }
-    main { padding: 18px 24px 60px; max-width: 1200px; margin: 0 auto; }
+    main { padding: 18px 24px 60px; max-width: 1280px; margin: 0 auto; }
     .panel {
       border: 1px solid var(--border);
       background: var(--panel);
@@ -40,7 +79,8 @@
       margin-bottom: 18px;
     }
     .panel h2 {
-      margin: 0; padding: 10px 14px;
+      margin: 0;
+      padding: 10px 14px;
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
@@ -53,52 +93,138 @@
     th { color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; }
     code, .mono { font: 12.5px/1.4 "JetBrains Mono", "Cascadia Code", "Consolas", monospace; }
     .pill {
-      display: inline-block; padding: 2px 8px; border-radius: 999px;
-      font-size: 11px; background: var(--code); color: var(--muted);
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      background: var(--code);
+      color: var(--muted);
+      white-space: nowrap;
     }
     .pill.ok { color: var(--ok); }
     .pill.warn { color: var(--warn); }
     .pill.err { color: var(--err); }
     button, .btn {
-      font: inherit; padding: 5px 12px; border-radius: 4px;
-      border: 1px solid var(--border); background: var(--code);
-      color: var(--fg); cursor: pointer;
+      font: inherit;
+      padding: 5px 10px;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: var(--code);
+      color: var(--fg);
+      cursor: pointer;
     }
-    button:hover { border-color: var(--accent); }
+    button:hover, .btn:hover { border-color: var(--accent); }
     button.danger { color: var(--err); border-color: var(--err); }
-    select, input[type="text"] {
-      font: inherit; padding: 4px 8px; border-radius: 4px;
-      background: var(--code); color: var(--fg); border: 1px solid var(--border);
+    button:disabled { color: var(--muted); cursor: default; opacity: .65; }
+    select, input[type="text"], textarea {
+      font: inherit;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: var(--code);
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      font: 12.5px/1.45 "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+      resize: vertical;
     }
     .pane-capture {
-      background: #000; color: #d8d8d8; padding: 10px 12px;
-      border-radius: 4px; max-height: 460px; overflow: auto;
-      white-space: pre-wrap; word-break: break-word;
+      background: #000;
+      color: #d8d8d8;
+      padding: 10px 12px;
+      border-radius: 4px;
+      max-height: 460px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
     }
     .attach {
-      display: flex; gap: 8px; align-items: center;
-      background: var(--code); padding: 8px 10px; border-radius: 4px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      background: var(--code);
+      padding: 8px 10px;
+      border-radius: 4px;
     }
     .attach code { color: var(--accent); flex: 1; user-select: all; }
     .muted { color: var(--muted); }
     form.inline { display: inline; }
-    form.run-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-    form.run-form input[type="text"] { width: 9em; }
     .empty { color: var(--muted); font-style: italic; padding: 14px; text-align: center; }
-    .panel.stuck { border-color: var(--err); }
-    .panel.stuck h2 { color: var(--err); }
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--border); }
+      main { padding: 14px; }
+    }
   </style>
 </head>
 <body>
-  <header>
-    <h1>harbor</h1>
-    <span class="crumbs">{% block crumbs %}<a href="/">dashboard</a>{% endblock %}</span>
-  </header>
-  <main>{% block content %}{% endblock %}</main>
+  <div class="shell">
+    <aside>
+      <div class="brand">
+        <h1><a href="/">harbor</a></h1>
+        <a class="settings-link" href="/settings">settings</a>
+      </div>
+      <div class="runtime-box">
+        <h2>Live Runtime</h2>
+        <div><span class="pill {% if runtime.source == 'global' %}ok{% else %}warn{% endif %}">{{ runtime.source }}</span></div>
+        <div class="project-path"><code>{{ runtime.path }}</code></div>
+      </div>
+      <div class="runtime-box">
+        <h2>Track Project</h2>
+        <form method="post" action="/projects/init" style="display: grid; gap: 8px;">
+          <input type="text" name="project_path" placeholder="D:\Projects\repo" required>
+          <input type="text" name="project_name" placeholder="Name (optional)">
+          <button type="submit">Track project</button>
+        </form>
+        <form method="get" action="/projects/init/browse" style="margin-top: 8px;">
+          <button type="submit">Browse and track</button>
+        </form>
+      </div>
+      <div class="project-tree">
+        <h2>Projects</h2>
+        {% if projects %}
+          {% for p in projects %}
+            <div class="project-item {% if selected_project_id == p.project.id %}selected{% endif %}">
+              <div class="project-title">
+                <a class="project-name" href="/projects/{{ p.project.id }}">{{ p.project.name }}</a>
+                <span class="pill {% if p.db_initialized %}ok{% else %}warn{% endif %}">
+                  {% if p.db_initialized %}db ready{% else %}db missing{% endif %}
+                </span>
+              </div>
+              <div class="project-path"><code>{{ p.project.path }}</code></div>
+              <div style="margin-top: 6px;">
+                <span class="pill {% if p.config_status == 'valid' %}ok{% elif p.config_status == 'invalid' %}err{% else %}warn{% endif %}">
+                  config {{ p.config_status }}
+                </span>
+              </div>
+              {% if p.config_error %}
+                <div class="project-path" style="color: var(--err);">{{ p.config_error }}</div>
+              {% endif %}
+              <div class="project-actions">
+                <form method="post" action="/projects/{{ p.project.id }}/config/load" class="inline">
+                  <button type="submit" {% if p.config_status != 'valid' %}disabled{% endif %}>Load config</button>
+                </form>
+                <form method="post" action="/projects/{{ p.project.id }}/config/save" class="inline">
+                  <button type="submit">Save live config here</button>
+                </form>
+              </div>
+            </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty">no agtx projects registered</div>
+        {% endif %}
+      </div>
+    </aside>
+    <div>
+      <header>
+        <span class="crumbs">{% block crumbs %}<a href="/">dashboard</a>{% endblock %}</span>
+      </header>
+      <main>{% block content %}{% endblock %}</main>
+    </div>
+  </div>
   <script>
-    // Render any <time data-utc="2026-...Z"> as local time + a relative hint.
-    // Server stores UTC; user reads in browser timezone. Re-runs after every
-    // htmx swap so partials updated by hx-trigger also get formatted.
     function harborFormatTimes(root) {
       (root || document).querySelectorAll('time[data-utc]').forEach(function (el) {
         if (el.dataset.formatted === '1') return;
@@ -107,24 +233,40 @@
         if (isNaN(d.getTime())) return;
         var local = d.toLocaleString(undefined, {
           year: 'numeric', month: 'short', day: '2-digit',
-          hour: '2-digit', minute: '2-digit', second: '2-digit',
+          hour: '2-digit', minute: '2-digit', second: '2-digit'
         });
         var diffMs = Date.now() - d.getTime();
         var rel;
         var s = Math.round(diffMs / 1000);
-        if (s < 60)        rel = s + 's ago';
+        if (s < 60) rel = s + 's ago';
         else if (s < 3600) rel = Math.round(s / 60) + 'm ago';
         else if (s < 86400) rel = Math.round(s / 3600) + 'h ago';
-        else                rel = Math.round(s / 86400) + 'd ago';
+        else rel = Math.round(s / 86400) + 'd ago';
         if (diffMs < 0) rel = 'in the future?';
         el.textContent = local + ' (' + rel + ')';
-        el.title = iso;  // hover to see the raw UTC ISO timestamp
+        el.title = iso;
         el.dataset.formatted = '1';
       });
     }
     harborFormatTimes();
     document.body.addEventListener('htmx:afterSwap', function (e) {
       harborFormatTimes(e.target);
+    });
+    document.body.addEventListener('htmx:beforeSwap', function (e) {
+      var pane = e.detail.target.querySelector('.pane-capture');
+      if (!pane) return;
+      var atBottom = (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 12);
+      e.detail.target.dataset.paneScroll = pane.scrollTop;
+      e.detail.target.dataset.paneAtBottom = atBottom ? '1' : '0';
+    });
+    document.body.addEventListener('htmx:afterSwap', function (e) {
+      var pane = e.target.querySelector('.pane-capture');
+      if (!pane) return;
+      if (e.target.dataset.paneAtBottom === '1') {
+        pane.scrollTop = pane.scrollHeight;
+      } else if (e.target.dataset.paneScroll !== undefined) {
+        pane.scrollTop = parseFloat(e.target.dataset.paneScroll);
+      }
     });
   </script>
 </body>

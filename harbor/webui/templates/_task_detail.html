@@ -1,0 +1,172 @@
+<article class="task-detail" data-task-detail="{{ task.id }}">
+  <div class="drawer-title">
+    <div>
+      <h1>{{ task.title }}</h1>
+      <div class="muted">
+        <code>{{ task.id[:8] }}</code>
+        <span class="pill {% if task.status == 'done' %}ok{% elif task.escalation_note %}err{% endif %}">{{ task.status }}</span>
+        agent <code>{{ task.agent }}</code>
+      </div>
+    </div>
+    {% if drawer %}
+      <button type="button" class="drawer-close" data-drawer-close aria-label="Close task drawer">Close</button>
+    {% endif %}
+  </div>
+
+  {% if task.escalation_note %}
+    <div class="panel">
+      <h2>Escalation</h2>
+      <div class="panel-body" style="color: var(--err);">{{ task.escalation_note }}</div>
+    </div>
+  {% endif %}
+
+  {% if task.session_name %}
+    <div class="panel">
+      <h2>tmux session <code style="text-transform:none;letter-spacing:0;font-size:12px;">{{ task.session_name }}</code></h2>
+      <div class="panel-body">
+        {% if live_session %}
+          <div
+            class="terminal-shell"
+            data-terminal-root
+            data-live="1"
+            data-ws-url="/ws/tmux/{{ task.id }}"
+          >
+            <div class="terminal-status muted" data-terminal-status>connecting...</div>
+            <div class="xterm-host" data-terminal-host></div>
+          </div>
+        {% else %}
+          <p class="muted" style="margin-top:0;">The task has a session name, but Harbor cannot see a live tmux session for it right now.</p>
+          <pre class="pane-capture">{{ pane_capture }}</pre>
+        {% endif %}
+
+        <details class="terminal-fallback" {% if not live_session %}open{% endif %}>
+          <summary class="muted">Attach and send fallback</summary>
+          <div class="attach" style="margin-top:8px;">
+            <code>{{ attach_command }}</code>
+          </div>
+          {% if task.worktree_path %}
+            <p class="muted" style="margin: 8px 0 0;">worktree: <code>{{ task.worktree_path }}</code> - branch <code>{{ task.branch_name or '?' }}</code></p>
+          {% endif %}
+          <form method="post" action="/actions/send-keys/{{ task.id }}" style="margin-top: 12px; display: flex; gap: 6px;">
+            <input type="text" name="text" placeholder="Type a message to relay into the pane (followed by Enter)" style="flex: 1;">
+            <button type="submit">Send</button>
+          </form>
+        </details>
+      </div>
+    </div>
+  {% endif %}
+
+  <div class="panel">
+    <h2>Description</h2>
+    <div class="panel-body">
+      {% if task.description %}
+        <pre style="white-space: pre-wrap; word-break: break-word; background: var(--code); padding: 10px; border-radius: 4px; max-height: 360px; overflow: auto;">{{ task.description }}</pre>
+      {% else %}
+        <div class="empty">No description</div>
+      {% endif %}
+
+      {% if blockers %}
+        <div style="margin-top: 12px;">
+          <strong class="muted">Blocked by:</strong>
+          <ul style="margin: 6px 0 0 20px;">
+            {% for b in blockers %}
+              <li><a href="/projects/{{ project.project.id }}?task={{ b.id }}" class="task-card" data-task-id="{{ b.id }}" data-partial-url="/_partials/task/{{ b.id }}">{{ b.title }}</a> <span class="pill">{{ b.status }}</span></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Worker Options</h2>
+    <div class="panel-body">
+      <form method="post" action="/actions/task/{{ task.id }}/worker-instructions">
+        <p class="muted" style="margin-top: 0;">
+          Per-task prompt append for this worker only. Use it for exclusive resources such as Android devices.
+        </p>
+        <textarea name="worker_instructions" spellcheck="false" placeholder="Android verification policy:&#10;- Claim emulator-5554 for this task.&#10;- For ADB commands, pass -s emulator-5554 or set ANDROID_SERIAL=emulator-5554.&#10;- If emulator-5554 is unavailable, block with classification=env and show adb devices.">{{ worker_instructions }}</textarea>
+        <label style="display: flex; gap: 8px; align-items: center; margin-top: 10px;">
+          <input type="checkbox" name="codex_goal" value="1" {% if codex_goal_enabled %}checked{% endif %}>
+          <span>Enable Codex <code>/goal</code> for this task</span>
+        </label>
+        <p class="muted" style="margin: 6px 0 0;">
+          When checked, Harbor launches Codex for this task with <code>--enable goals</code>.
+        </p>
+        <div style="margin-top: 10px; display: flex; gap: 8px; align-items: center;">
+          <button type="submit">Save</button>
+          <span class="muted">Saved into the task description as <code>## Worker Instructions</code> and <code>## Codex Goal</code>.</span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Actions</h2>
+    <div class="panel-body" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+      {% if task.status != 'backlog' %}
+        <form method="post" action="/actions/move/{{ task.id }}" class="inline">
+          <input type="hidden" name="action" value="move_backward">
+          <button type="submit" title="{% if task.status == 'planning' %}Reset to Backlog (kills tmux session, clears worktree pointer){% else %}Move one column to the left{% endif %}">Move back</button>
+        </form>
+      {% endif %}
+
+      {% if task.status != 'done' %}
+        <form method="post" action="/actions/move/{{ task.id }}" class="inline">
+          <input type="hidden" name="action" value="move_forward">
+          <button type="submit">Move forward</button>
+        </form>
+      {% endif %}
+
+      {% if task.status == 'backlog' %}
+        <form method="post" action="/actions/move/{{ task.id }}" class="inline">
+          <input type="hidden" name="action" value="research">
+          <button type="submit">Research</button>
+        </form>
+      {% endif %}
+
+      <form method="post" action="/actions/move/{{ task.id }}" class="inline" style="display: flex; gap: 4px; align-items: center;">
+        <input type="hidden" name="action" value="escalate_to_user">
+        <input type="text" name="reason" placeholder="escalation reason" style="width: 18em;">
+        <button type="submit">Escalate</button>
+      </form>
+
+      {% if task.session_name %}
+        <form method="post" action="/actions/kill/{{ task.id }}" class="inline">
+          <button type="submit" class="danger">Kill session</button>
+        </form>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if recent_requests %}
+    <div class="panel">
+      <h2>Recent transition requests</h2>
+      <div class="panel-body">
+        <table>
+          <thead>
+            <tr><th>action</th><th>requested</th><th>processed</th><th>error</th></tr>
+          </thead>
+          <tbody>
+            {% for r in recent_requests %}
+              <tr>
+                <td><code>{{ r.action }}</code></td>
+                <td><time data-utc="{{ r.requested_at }}">{{ r.requested_at }}</time></td>
+                <td>
+                  {% if r.processed_at %}
+                    <time data-utc="{{ r.processed_at }}">{{ r.processed_at }}</time>
+                  {% elif r.claimed_by %}
+                    <span class="pill warn">claimed</span>
+                  {% else %}
+                    <span class="pill">queued</span>
+                  {% endif %}
+                </td>
+                <td>{% if r.error %}<code style="color: var(--err);">{{ r.error[:200] }}</code>{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+</article>

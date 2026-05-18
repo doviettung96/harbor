@@ -1,0 +1,384 @@
+{% extends "base.html" %}
+{% block title %}{{ project.project.name }} - harbor{% endblock %}
+{% block crumbs %}
+  <a href="/">board</a> / <span>{{ project.project.name }}</span>
+  <span class="muted" style="margin-left: 12px;">project: <code>{{ project.project.path }}</code></span>
+{% endblock %}
+{% block content %}
+
+{% if db_uninitialized %}
+  <div class="panel">
+    <h2>Project DB not initialized</h2>
+    <div class="panel-body">
+      <p class="muted" style="margin-top: 0;">Harbor found this project in agtx's global index, but its task DB is missing or does not have the required tables.</p>
+      <p><code>{{ project.db_path }}</code></p>
+    </div>
+  </div>
+{% else %}
+  <div class="board-layout {% if open_task or open_planning %}drawer-open{% endif %}" data-board-layout>
+    <section
+      id="board-content"
+      class="board-main"
+      hx-get="/_partials/board"
+      hx-trigger="every 4s"
+      hx-swap="innerHTML"
+    >
+      {% include "_board_partial.html" %}
+    </section>
+    <aside
+      id="task-drawer"
+      class="task-drawer {% if open_task or open_planning %}open{% endif %}"
+      data-task-drawer
+      aria-live="polite"
+    >
+      {% if open_task %}
+        {% with request=open_task.request, projects=open_task.projects, selected_project=open_task.selected_project, selected_project_id=open_task.selected_project_id, runtime=open_task.runtime, project=open_task.project, task=open_task.task, drawer=open_task.drawer, live_session=open_task.live_session, pane_capture=open_task.pane_capture, attach_command=open_task.attach_command, blockers=open_task.blockers, recent_requests=open_task.recent_requests, valid_statuses=open_task.valid_statuses, codex_goal_enabled=open_task.codex_goal_enabled, worker_instructions=open_task.worker_instructions %}
+          {% include "_task_detail.html" %}
+        {% endwith %}
+      {% elif open_planning %}
+        {% with request=open_planning.request, projects=open_planning.projects, selected_project=open_planning.selected_project, selected_project_id=open_planning.selected_project_id, runtime=open_planning.runtime, project=open_planning.project, drawer=open_planning.drawer, session_name=open_planning.session_name, live_session=open_planning.live_session, pane_capture=open_planning.pane_capture, attach_command=open_planning.attach_command %}
+          {% include "_planning_session.html" %}
+        {% endwith %}
+      {% else %}
+        <div class="drawer-empty muted">Select a task to inspect it here.</div>
+      {% endif %}
+    </aside>
+  </div>
+{% endif %}
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+
+<style>
+  main { max-width: none; }
+  .board-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 44vw);
+    gap: 14px;
+    align-items: start;
+  }
+  .board-main { min-width: 0; }
+  .task-drawer {
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    display: none;
+    border-left: 1px solid var(--border);
+    padding-left: 14px;
+  }
+  .task-drawer.open { display: block; }
+  .drawer-empty {
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 24px;
+    text-align: center;
+  }
+  .drawer-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .drawer-title h1 {
+    margin: 0 0 4px;
+    font-size: 19px;
+    line-height: 1.25;
+    overflow-wrap: anywhere;
+  }
+  .drawer-close { white-space: nowrap; }
+  .kanban {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(160px, 1fr));
+    gap: 12px;
+  }
+  .board-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .planning-strip {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+  .planning-strip-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .planning-strip-head h2 {
+    margin: 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+  }
+  .planning-strip-head .count {
+    color: var(--muted);
+    font-size: 12px;
+  }
+  .planning-session-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+  }
+  .planning-session-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    max-width: min(100%, 520px);
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--code);
+    color: var(--fg);
+    text-decoration: none;
+  }
+  .planning-session-link:hover,
+  .planning-session-link.active {
+    border-color: var(--accent);
+  }
+  .planning-session-link .title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 12px/1.4 "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+  }
+  .kanban .col {
+    border: 1px solid var(--border);
+    background: var(--panel);
+    border-radius: 6px;
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+  }
+  .kanban .col h2 {
+    margin: 0;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .kanban .col h2 .count { font-weight: 400; }
+  .kanban .col-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .card {
+    display: block;
+    background: var(--code);
+    color: var(--fg);
+    padding: 8px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    text-decoration: none;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card .title { display: block; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+  .card .meta {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .card .meta .agent { background: var(--panel); padding: 1px 6px; border-radius: 3px; }
+  .empty-col { color: var(--muted); font-style: italic; padding: 16px; text-align: center; font-size: 12px; }
+  .terminal-shell {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    background: #050505;
+  }
+  .terminal-status {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--code);
+    font-size: 12px;
+  }
+  .xterm-host {
+    height: 440px;
+    padding: 6px;
+  }
+  .terminal-fallback {
+    margin-top: 10px;
+  }
+  @media (max-width: 1300px) {
+    .board-layout { grid-template-columns: 1fr; }
+    .task-drawer {
+      position: fixed;
+      inset: 0 0 0 auto;
+      width: min(680px, 94vw);
+      z-index: 20;
+      background: var(--bg);
+      padding: 18px;
+      border-left: 1px solid var(--border);
+      box-shadow: -18px 0 40px rgba(0, 0, 0, .35);
+    }
+  }
+  @media (max-width: 1100px) {
+    .kanban { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+  }
+  @media (max-width: 640px) {
+    .kanban { grid-template-columns: 1fr; }
+  }
+</style>
+
+<script>
+  (function () {
+    var drawer = document.querySelector('[data-task-drawer]');
+    var terminal = null;
+
+    function closeTerminal() {
+      if (!terminal) return;
+      try { terminal.socket.close(); } catch (e) {}
+      try { terminal.term.dispose(); } catch (e) {}
+      terminal = null;
+    }
+
+    function setDrawerParam(kind, value) {
+      var url = new URL(window.location.href);
+      url.searchParams.delete('task');
+      url.searchParams.delete('planning');
+      if (kind && value) url.searchParams.set(kind, value);
+      history.pushState({ drawer: kind || null, value: value || null }, '', url.pathname + url.search);
+    }
+
+    function initTerminal(root) {
+      closeTerminal();
+      var shell = root.querySelector('[data-terminal-root][data-live="1"]');
+      if (!shell || !window.Terminal || !window.FitAddon) return;
+      var host = shell.querySelector('[data-terminal-host]');
+      var status = shell.querySelector('[data-terminal-status]');
+      var fitAddon = new window.FitAddon.FitAddon();
+      var term = new window.Terminal({
+        cursorBlink: true,
+        convertEol: true,
+        fontFamily: 'JetBrains Mono, Cascadia Code, Consolas, monospace',
+        fontSize: 13,
+        theme: { background: '#050505', foreground: '#d8d8d8' }
+      });
+      term.loadAddon(fitAddon);
+      term.open(host);
+      fitAddon.fit();
+
+      var wsUrl = new URL(shell.dataset.wsUrl, window.location.href);
+      wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+      var socket = new WebSocket(wsUrl);
+      terminal = { socket: socket, term: term, fit: fitAddon };
+
+      socket.addEventListener('open', function () {
+        status.textContent = 'connected';
+        fitAddon.fit();
+        socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      });
+      socket.addEventListener('message', function (event) {
+        term.write(event.data);
+      });
+      socket.addEventListener('close', function () {
+        status.textContent = 'disconnected - use attach/send fallback if needed';
+      });
+      socket.addEventListener('error', function () {
+        status.textContent = 'terminal connection failed - use attach/send fallback';
+      });
+      term.onData(function (data) {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: 'input', data: data }));
+        }
+      });
+      var resizeTimer = null;
+      window.addEventListener('resize', function () {
+        if (!terminal || terminal.socket !== socket) return;
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () {
+          fitAddon.fit();
+          if (socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          }
+        }, 100);
+      });
+    }
+
+    function openDrawerFromUrl(url, kind, value) {
+      if (!drawer) return;
+      closeTerminal();
+      drawer.classList.add('open');
+      drawer.innerHTML = '<div class="drawer-empty muted">Loading...</div>';
+      fetch(url, { headers: { 'X-Requested-With': 'fetch' } })
+        .then(function (response) {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return response.text();
+        })
+        .then(function (html) {
+          drawer.innerHTML = html;
+          harborFormatTimes(drawer);
+          setDrawerParam(kind, value);
+          initTerminal(drawer);
+        })
+        .catch(function (err) {
+          drawer.innerHTML = '<div class="panel"><h2>Task failed to load</h2><div class="panel-body muted">' + err.message + '</div></div>';
+        });
+    }
+
+    document.addEventListener('click', function (event) {
+      var close = event.target.closest('[data-drawer-close]');
+      if (close) {
+        event.preventDefault();
+        closeTerminal();
+        drawer.classList.remove('open');
+        drawer.innerHTML = '<div class="drawer-empty muted">Select a task or manual session to inspect it here.</div>';
+        setDrawerParam(null, null);
+        return;
+      }
+
+      var planningLink = event.target.closest('.planning-session-link');
+      if (planningLink && !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        openDrawerFromUrl(
+          planningLink.dataset.partialUrl,
+          'planning',
+          planningLink.dataset.planningSession
+        );
+        return;
+      }
+
+      var card = event.target.closest('.task-card');
+      if (!card || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      openDrawerFromUrl(card.dataset.partialUrl, 'task', card.dataset.taskId);
+    });
+
+    window.addEventListener('popstate', function () {
+      var current = new URL(window.location.href);
+      var taskId = current.searchParams.get('task');
+      var planning = current.searchParams.get('planning');
+      if (taskId) openDrawerFromUrl('/_partials/task/' + encodeURIComponent(taskId), 'task', taskId);
+      else if (planning) openDrawerFromUrl('/_partials/planning/' + encodeURIComponent(planning), 'planning', planning);
+      else {
+        closeTerminal();
+        drawer.classList.remove('open');
+      }
+    });
+
+    if (drawer && drawer.classList.contains('open')) {
+      initTerminal(drawer);
+    }
+  })();
+</script>
+
+{% endblock %}

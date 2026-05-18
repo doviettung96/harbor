@@ -15,6 +15,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Sequence
 
+from .terminal import tmux_attach_argv
+
 DEFAULT_SERVER = "harbor"
 
 
@@ -95,6 +97,13 @@ class Tmux:
         cp = self._run("has-session", "-t", session, check=False)
         return cp.returncode == 0
 
+    def list_sessions(self) -> list[str]:
+        """Return live tmux session names for this Harbor tmux server."""
+        cp = self._run("list-sessions", "-F", "#{session_name}", check=False)
+        if cp.returncode != 0:
+            return []
+        return [line.strip() for line in cp.stdout.splitlines() if line.strip()]
+
     def ensure_session(self, session: str, cwd: str, *, default_shell: str | None = None) -> None:
         """Create a detached session if it does not already exist (idempotent).
 
@@ -122,8 +131,18 @@ class Tmux:
         """
         if self.has_session(session):
             return
+        # Apply default-shell to the SERVER (-g) BEFORE new-session so the
+        # session's auto-created window uses the right shell. If the tmux
+        # server is already running and was started without our -f conf, this
+        # is the only way to get it to use bash on Windows. -f only takes
+        # effect at server startup; if the server already exists, -g
+        # set-option is the recovery path.
+        if default_shell:
+            self._run("set-option", "-g", "default-shell", default_shell, check=False)
         self._run("new-session", "-d", "-A", "-s", session)
         if default_shell:
+            # Per-session fallback (mostly redundant with -g above, but keep
+            # for safety in case a future tmux variant scopes -g differently).
             self._run("set-option", "-t", session, "default-shell", default_shell, check=False)
         # Use forward-slash form so the cd command works in Git Bash and is
         # also accepted by PowerShell and modern cmd.exe.
@@ -280,3 +299,7 @@ class Tmux:
         """
         target = session if not window else f"{session}:{window}"
         return f"tmux -L {shlex.quote(self.server)} attach -t {shlex.quote(target)}"
+
+    def attach_argv(self, session: str) -> list[str]:
+        """Argv used by embedded terminal attach clients."""
+        return tmux_attach_argv(self.server, session)

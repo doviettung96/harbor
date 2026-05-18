@@ -60,13 +60,20 @@ def test_ensure_session_sets_default_shell_when_provided():
     with patch("harbor.tmux.subprocess.run", side_effect=fake_run):
         t.ensure_session("s1", "/tmp/repo", default_shell="C:/Program Files/Git/bin/bash.exe")
 
-    # Order: has-session, new-session, set-option default-shell, send-keys cd
+    # Order: has-session, set-option -g default-shell (BEFORE new-session so
+    # the auto-created window uses the right shell), new-session,
+    # set-option -t default-shell (per-session fallback), send-keys cd
     assert calls[0][3] == "has-session"
-    assert calls[1][3] == "new-session"
-    assert calls[2][3] == "set-option"
-    assert "default-shell" in calls[2]
-    assert "C:/Program Files/Git/bin/bash.exe" in calls[2]
-    assert calls[3][3] == "send-keys"
+    assert calls[1][3] == "set-option"
+    assert "-g" in calls[1]
+    assert "default-shell" in calls[1]
+    assert "C:/Program Files/Git/bin/bash.exe" in calls[1]
+    assert calls[2][3] == "new-session"
+    # Per-session set-option fallback
+    assert calls[3][3] == "set-option"
+    assert "-t" in calls[3]
+    # Then the `cd` send-keys
+    assert calls[4][3] == "send-keys"
 
 
 def test_ensure_session_no_default_shell_skips_set_option():
@@ -101,6 +108,30 @@ def test_ensure_session_skips_when_exists():
 
     assert len(calls) == 1  # only has-session, no new-session
     assert calls[0][3] == "has-session"
+
+
+def test_list_sessions_parses_session_names():
+    t = Tmux()
+    captured: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        captured.append(argv)
+        return _completed(stdout="alpha\n\nplan-default-123\n")
+
+    with patch("harbor.tmux.subprocess.run", side_effect=fake_run):
+        assert t.list_sessions() == ["alpha", "plan-default-123"]
+
+    assert captured[0][3:6] == ["list-sessions", "-F", "#{session_name}"]
+
+
+def test_list_sessions_returns_empty_when_server_missing():
+    t = Tmux()
+
+    def fake_run(argv, **kwargs):
+        return _completed(returncode=1, stderr="no server running")
+
+    with patch("harbor.tmux.subprocess.run", side_effect=fake_run):
+        assert t.list_sessions() == []
 
 
 def test_new_window_then_send_keys():
@@ -269,6 +300,13 @@ def test_attach_command_quotes_server_and_target():
     # shlex.quote should wrap the whitespace-containing server name in quotes
     assert "'my server'" in cmd
     assert "epic-1:bead-3" in cmd
+
+
+def test_attach_argv_uses_server_and_session():
+    t = Tmux(server="harbor")
+    assert t.attach_argv("task-live") == [
+        "tmux", "-L", "harbor", "attach", "-t", "task-live",
+    ]
 
 
 def test_send_keys_literal_uses_dash_l_and_appends_enter():
