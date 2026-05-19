@@ -1,4 +1,5 @@
 <article class="task-detail" data-task-detail="{{ task.id }}">
+  {% set start_blocked = task.status == 'backlog' and blockers %}
   <div class="drawer-title">
     <div>
       <h1>{{ task.title }}</h1>
@@ -65,12 +66,12 @@
         <div class="empty">No description</div>
       {% endif %}
 
-      {% if blockers %}
+      {% if dependencies %}
         <div style="margin-top: 12px;">
           <strong class="muted">Blocked by:</strong>
           <ul style="margin: 6px 0 0 20px;">
-            {% for b in blockers %}
-              <li><a href="/projects/{{ project.project.id }}?task={{ b.id }}" class="task-card" data-task-id="{{ b.id }}" data-partial-url="/_partials/task/{{ b.id }}">{{ b.title }}</a> <span class="pill">{{ b.status }}</span></li>
+            {% for b in dependencies %}
+              <li><a href="/projects/{{ project.project.id }}?task={{ b.id }}" class="task-card" data-task-id="{{ b.id }}" data-partial-url="/_partials/task/{{ b.id }}"><code>{{ b.short_id }}</code> &mdash; {{ b.title }}</a> <span class="pill">{{ b.status }}</span></li>
             {% endfor %}
           </ul>
         </div>
@@ -114,14 +115,14 @@
       {% if task.status != 'done' %}
         <form method="post" action="/actions/move/{{ task.id }}" class="inline">
           <input type="hidden" name="action" value="move_forward">
-          <button type="submit">Move forward</button>
+          <button type="submit" {% if start_blocked %}disabled title="Blocked by: {% for b in blockers %}{{ b.short_id }} {{ b.title }} [{{ b.status }}]{% if not loop.last %}; {% endif %}{% endfor %}"{% endif %}>{% if start_blocked %}Blocked{% else %}Move forward{% endif %}</button>
         </form>
       {% endif %}
 
       {% if task.status == 'backlog' %}
         <form method="post" action="/actions/move/{{ task.id }}" class="inline">
           <input type="hidden" name="action" value="research">
-          <button type="submit">Research</button>
+          <button type="submit" {% if start_blocked %}disabled title="Blocked by: {% for b in blockers %}{{ b.short_id }} {{ b.title }} [{{ b.status }}]{% if not loop.last %}; {% endif %}{% endfor %}"{% endif %}>Research</button>
         </form>
       {% endif %}
 

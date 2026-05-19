@@ -32,7 +32,7 @@
       aria-live="polite"
     >
       {% if open_task %}
-        {% with request=open_task.request, projects=open_task.projects, selected_project=open_task.selected_project, selected_project_id=open_task.selected_project_id, runtime=open_task.runtime, project=open_task.project, task=open_task.task, drawer=open_task.drawer, live_session=open_task.live_session, pane_capture=open_task.pane_capture, attach_command=open_task.attach_command, blockers=open_task.blockers, recent_requests=open_task.recent_requests, valid_statuses=open_task.valid_statuses, codex_goal_enabled=open_task.codex_goal_enabled, worker_instructions=open_task.worker_instructions %}
+        {% with request=open_task.request, projects=open_task.projects, selected_project=open_task.selected_project, selected_project_id=open_task.selected_project_id, runtime=open_task.runtime, project=open_task.project, task=open_task.task, drawer=open_task.drawer, live_session=open_task.live_session, pane_capture=open_task.pane_capture, attach_command=open_task.attach_command, dependencies=open_task.dependencies, blockers=open_task.blockers, recent_requests=open_task.recent_requests, valid_statuses=open_task.valid_statuses, codex_goal_enabled=open_task.codex_goal_enabled, worker_instructions=open_task.worker_instructions %}
           {% include "_task_detail.html" %}
         {% endwith %}
       {% elif open_planning %}
@@ -196,6 +196,13 @@
     flex-wrap: wrap;
   }
   .card .meta .agent { background: var(--panel); padding: 1px 6px; border-radius: 3px; }
+  .card .deps {
+    display: block;
+    margin-top: 6px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
   .empty-col { color: var(--muted); font-style: italic; padding: 16px; text-align: center; font-size: 12px; }
   .terminal-shell {
     border: 1px solid var(--border);
