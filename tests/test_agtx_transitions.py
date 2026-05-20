@@ -32,12 +32,14 @@ def _make_task(
     project_id: str = "proj-1", agent: str = "claude",
     session_name: str | None = None, worktree_path: str | None = None,
     branch_name: str | None = None, description: str | None = None,
+    referenced_tasks: str | None = None,
 ) -> Task:
     n = _now()
     return Task(
         id=id, title=title, description=description, status=status, agent=agent,
         project_id=project_id, session_name=session_name,
         worktree_path=worktree_path, branch_name=branch_name,
+        referenced_tasks=referenced_tasks,
         created_at=n, updated_at=n,
     )
 
@@ -131,6 +133,74 @@ def test_move_forward_from_backlog_creates_worktree_and_session(
     assert t.session_name is not None
     assert t.worktree_path is not None
     assert t.branch_name == "task/task-aaa"
+
+
+def test_move_forward_from_blocked_backlog_records_error_without_spawn(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
+):
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="planning",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Blocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+    memdb.create_transition_request(task_id=task_id, action="move_forward")
+
+    worker = worker_factory(project_path=Path("/repo"))
+    worker.process_once()
+
+    fake_git.add_worktree.assert_not_called()
+    fake_tmux.ensure_session.assert_not_called()
+    task = memdb.get_task(task_id)
+    assert task.status == "backlog"
+    recent = memdb.recent_transition_requests(task_id)
+    assert "blocked by dependencies" in (recent[0].error or "")
+    assert "aaaaaaaa Dependency Task [planning]" in (recent[0].error or "")
+
+
+def test_research_from_blocked_backlog_records_error_without_spawn(
+    memdb: AgtxDb, fake_git: MagicMock, worker_factory,
+):
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="review",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Blocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+    memdb.create_transition_request(task_id=task_id, action="research")
+
+    worker = worker_factory()
+    worker.process_once()
+
+    fake_git.add_worktree.assert_not_called()
+    task = memdb.get_task(task_id)
+    assert task.status == "backlog"
+    recent = memdb.recent_transition_requests(task_id)
+    assert "aaaaaaaa Dependency Task [review]" in (recent[0].error or "")
+
+
+def test_move_forward_from_backlog_allows_done_dependencies(
+    memdb: AgtxDb, fake_git: MagicMock, worker_factory,
+):
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="done",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Unblocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+    memdb.create_transition_request(task_id=task_id, action="move_forward")
+
+    worker = worker_factory()
+    worker.process_once()
+
+    fake_git.add_worktree.assert_called_once()
+    assert memdb.get_task(task_id).status == "planning"
 
 
 def test_move_forward_planning_to_running_no_side_effects(

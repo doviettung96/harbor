@@ -392,6 +392,7 @@ class TransitionWorker:
                 raise RuntimeError(
                     f"{action} requires status=backlog (got {task.status!r})"
                 )
+            self._ensure_dependencies_satisfied(task)
             self._spawn_session(task, target_status="planning")
             return
 
@@ -457,6 +458,7 @@ class TransitionWorker:
 
     def _move_forward(self, task: Task) -> None:
         if task.status == "backlog":
+            self._ensure_dependencies_satisfied(task)
             self._spawn_session(task, target_status="planning")
         elif task.status == "planning":
             # Same session; flip status and push the running-phase prompt so
@@ -475,6 +477,16 @@ class TransitionWorker:
             raise RuntimeError("task is already done")
         else:
             raise RuntimeError(f"unknown status {task.status!r}")
+
+    @staticmethod
+    def _ensure_dependencies_satisfied(task: Task) -> None:
+        if task.deps_satisfied:
+            return
+        blockers = ", ".join(
+            f"{dep.short_id} {dep.title} [{dep.status}]"
+            for dep in task.blocking_dependencies
+        )
+        raise RuntimeError(f"task is blocked by dependencies: {blockers}")
 
     # ---- side-effect primitives -------------------------------------------
 

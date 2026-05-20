@@ -999,7 +999,7 @@ def create_app(
         if task is None:
             raise HTTPException(404, f"task {task_id!r} not found")
         if task.status == "backlog" and action in {
-            "move_forward", "move_to_planning", "research", "move_to_running",
+            "move_forward", "move_to_planning", "research",
         } and not task.deps_satisfied:
             blockers = ", ".join(
                 f"{dep.short_id} {dep.title} [{dep.status}]"
