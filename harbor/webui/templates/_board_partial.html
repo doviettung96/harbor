@@ -62,6 +62,7 @@
           >
             <span class="title">{{ task.title }}</span>
             <span class="meta">
+              <code>{{ task.id[:8] }}</code>
               <span class="agent">{{ task.agent }}</span>
               {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
               {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
