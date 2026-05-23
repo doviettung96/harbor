@@ -1,6 +1,6 @@
 ---
 name: agtx-task-verify
-description: "Verify an in-progress agtx task against the ## Verification Probes embedded in its description. Runs each probe through target-runtime-exec, gates the task's move to Review on success, and writes failure summaries into <worktree>/.agtx/execute.md. Use after the worker finishes implementation, before moving the task forward."
+description: "Verify an in-progress agtx task against the ## Verification Probes embedded in its description. Runs each probe through target-runtime-exec, optionally invokes build-and-test for repo-default checks when ## Run Repo Defaults is yes, gates the task's move to Review on success, and writes failure summaries into <worktree>/.agtx/execute.md. Use after the worker finishes implementation, before moving the task forward."
 ---
 
 # agtx Task Verify
@@ -49,7 +49,31 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
      === <UTC timestamp> all probes passed ===
      <bulleted list of probe commands and exit codes>
      ```
-   - Print "verification passed" with the probe summary.
+   - Continue to step 8 before declaring victory.
+
+8. **Repo-default gate (optional).** Parse `## Run Repo Defaults` from the task description (case-insensitive).
+   - Treat `yes`, `y`, `true`, `1`, `on`, `enabled` as opt-in. Anything else (including a missing section) is opt-out — preserving backwards compat with tasks created before this header existed.
+   - **If opt-out:** skip to step 9.
+   - **If opt-in:** invoke the `build-and-test` skill (or follow its discovery + run steps inline). It reads the repo's documented build/test commands from `README.md`, `pyproject.toml`, `package.json`, `Makefile`, or CI config and runs each via `target-runtime-exec`. Do not re-run the task's `## Verification Probes` here — they already passed in step 5.
+   - **On any failure in build-and-test:**
+     - Append the failing command, exit code, and stderr tail to `<worktree>/.agtx/execute.md`:
+       ```
+       === <UTC timestamp> repo defaults failed ===
+       command: <command>
+       exit: <code>
+       stderr (last 20 lines):
+       <stderr tail>
+       ```
+     - Emit `blocked classification=acceptance`.
+     - Do NOT call `move_task` — the task stays in `Running`. Hand control back to the worker.
+   - **On all repo-default commands passing:** append a success record to `<worktree>/.agtx/execute.md`:
+     ```
+     === <UTC timestamp> repo defaults passed ===
+     <bulleted list of build-and-test commands and exit codes>
+     ```
+
+9. **Verification passed:**
+   - Print `verification passed` with the probe summary (and `+ repo defaults` if step 8 ran).
    - Return control to the worker, who will call `mcp__agtx__move_task(task_id, action="move_forward")`.
 
 ## Hard Rules
@@ -58,14 +82,17 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
 - Verify cannot decide a probe "passed in spirit" if it exited non-zero. Exit code is law.
 - Verify never calls `move_task` itself — that is the worker's responsibility, gated on this skill's success report.
 - Verify writes to `<worktree>/.agtx/execute.md`, never to `.agtx/runtime-target.json` or any other shared file.
+- Verify cannot weaken the repo-defaults gate. If `## Run Repo Defaults` is `yes`, build-and-test MUST run and pass. Verify cannot reinterpret it as `no` because the suite is slow or some test "looks unrelated".
 - If the same probe has flaked across runs, do not paper over it — escalate so the user can either fix the probe or accept the flake explicitly.
 
 ## Output Contract
 
 Single trailing line, machine-readable:
 
-- Success: `agtx-verify task=<id> probes=<N> passed`
-- Failure: `agtx-verify task=<id> probes=<N> failed=<idx> exit=<code>`
+- Success (probes only): `agtx-verify task=<id> probes=<N> passed`
+- Success (probes + repo defaults): `agtx-verify task=<id> probes=<N> passed repo_defaults=passed`
+- Probe failure: `agtx-verify task=<id> probes=<N> failed=<idx> exit=<code>`
+- Repo-default failure: `agtx-verify task=<id> probes=<N> passed repo_defaults=failed`
 - Escalation: `agtx-verify task=<id> escalated reason=<short>`
 
-These lines are what `agtx-task-worker` greps for to decide whether to call `move_task`.
+These lines are what `agtx-task-worker` greps for to decide whether to call `move_task`. Any line that does not end in `passed` (with optional `repo_defaults=passed`) is a no-advance signal.

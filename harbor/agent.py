@@ -118,6 +118,14 @@ class Config:
     # so a one-off override is always possible. Tuple form to match
     # TransitionConfig.agent_command.
     agtx_agent_command: tuple[str, ...] | None = None
+    # Per-agent worker CLI overrides for the agtx webview, read from
+    # harbor.yml's `agtx.agent_command_by_agent`. Maps an agtx task agent name
+    # (claude/codex/gemini/...) to the argv harbor launches for that agent's
+    # worker session. Checked before `agtx_agent_command` when resolving a
+    # task's worker, so the global command can target the manual planning
+    # session while each task's worker still follows its own agent. The
+    # webui's `--map-agent` CLI flag overrides any key set here.
+    agtx_agent_command_by_agent: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Workflow plugin to use for phase commands/prompts/auto-dismiss. Read
     # from `agtx.plugin` in harbor.yml; the CLI `--plugin` flag overrides.
     # Can be a plain plugin name (searched in <repo>/plugins/, .agtx/plugins/,
@@ -204,6 +212,32 @@ def _parse_agtx_agent_command(raw: Any) -> tuple[str, ...] | None:
     )
 
 
+def _parse_agtx_agent_command_map(raw: Any) -> dict[str, tuple[str, ...]]:
+    """Parse `agtx.agent_command_by_agent` — a mapping from an agtx task agent
+    name (claude/codex/gemini/...) to the CLI invocation harbor launches for
+    that agent's worker session. Each value is a shell-quoted string or a list
+    of strings, the same shapes `agent_command` accepts.
+
+    `harbor.yml`:
+        agtx:
+          agent_command_by_agent:
+            codex: "codex --yolo"
+            claude: [claude, --dangerously-skip-permissions]
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"agtx.agent_command_by_agent must be a mapping, got {type(raw).__name__}"
+        )
+    out: dict[str, tuple[str, ...]] = {}
+    for key, value in raw.items():
+        argv = _parse_agtx_agent_command(value)
+        if argv:
+            out[str(key)] = argv
+    return out
+
+
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     """Load harbor.yml.
 
@@ -257,6 +291,9 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         default_shell = _auto_detect_default_shell()
     agtx_section = data.get("agtx") or {}
     agtx_agent_command = _parse_agtx_agent_command(agtx_section.get("agent_command"))
+    agtx_agent_command_by_agent = _parse_agtx_agent_command_map(
+        agtx_section.get("agent_command_by_agent")
+    )
     agtx_plugin = agtx_section.get("plugin")
     if agtx_plugin is not None and not isinstance(agtx_plugin, str):
         raise ValueError(
@@ -272,6 +309,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         default_profile=default,
         default_shell=default_shell,
         agtx_agent_command=agtx_agent_command,
+        agtx_agent_command_by_agent=agtx_agent_command_by_agent,
         agtx_plugin=agtx_plugin,
         agtx_prompt_append=agtx_prompt_append,
     )
@@ -315,6 +353,10 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
     agtx: dict[str, Any] = {}
     if cfg.agtx_agent_command:
         agtx["agent_command"] = list(cfg.agtx_agent_command)
+    if cfg.agtx_agent_command_by_agent:
+        agtx["agent_command_by_agent"] = {
+            k: list(v) for k, v in sorted(cfg.agtx_agent_command_by_agent.items())
+        }
     if cfg.agtx_plugin:
         agtx["plugin"] = cfg.agtx_plugin
     if cfg.agtx_prompt_append:

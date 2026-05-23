@@ -214,6 +214,22 @@ def canonical_project_path_str(project_path: str | Path) -> str:
     return raw
 
 
+def strip_extended_length_prefix(path: str | Path) -> Path:
+    r"""Return `path` with any Windows extended-length `\\?\` prefix removed.
+
+    Harbor stores project paths in agtx's canonical `\\?\`-prefixed form (see
+    `canonical_project_path_str`) so the per-project DB hash lines up with
+    agtx's Rust canonicalization. That form is fine for hashing but poisons
+    anything that shells out: `git worktree add`, tmux's session cwd, and the
+    `cd` inside the pane launcher all reject it. Use this whenever a stored
+    project/worktree path is about to be handed to git, tmux, or a shell.
+    """
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    return Path(s)
+
+
 # ---- Dataclasses (mirror D:/Projects/agtx/src/db/models.rs) ---------------
 
 
