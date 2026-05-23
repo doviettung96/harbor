@@ -32,11 +32,13 @@ def _make_task(
     *, id: str = "t1", title: str = "do thing", status: str = "backlog",
     project_id: str = "p1", agent: str = "claude",
     session_name: str | None = None, description: str | None = None,
+    referenced_tasks: str | None = None,
 ) -> Task:
     n = _now()
     return Task(
         id=id, title=title, description=description, status=status, agent=agent,
         project_id=project_id, session_name=session_name,
+        referenced_tasks=referenced_tasks,
         created_at=n, updated_at=n,
     )
 
@@ -81,6 +83,29 @@ def test_board_renders_columns_and_tasks(app_client):
     assert "Planny" in body
     assert "Donny" in body
     assert "New Manual Session" in body
+
+
+def test_board_and_detail_render_short_ids_and_dependencies(app_client):
+    client, memdb, _ = app_client
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="planning",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Blocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+
+    r = client.get(f"/?task={task_id}")
+
+    assert r.status_code == 200
+    assert "bbbbbbbb" in r.text
+    assert "Blocked by:" in r.text
+    assert "aaaaaaaa" in r.text
+    assert "Dependency Task" in r.text
+    assert "[planning]" in r.text
+    assert 'title="Blocked by: aaaaaaaa Dependency Task [planning]"' in r.text
+    assert '<button type="submit" disabled' in r.text
 
 
 def test_sidebar_renders_track_project_form(app_client):
@@ -234,6 +259,75 @@ def test_post_move_queues_transition_request(app_client):
     pending = memdb.pending_transition_requests()
     assert len(pending) == 1
     assert pending[0].action == "move_forward"
+
+
+def test_post_move_rejects_blocked_backlog_task_without_queuing(app_client):
+    client, memdb, _ = app_client
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="planning",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Blocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+
+    r = client.post(
+        f"/actions/move/{task_id}",
+        data={"action": "move_forward"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 409
+    assert "aaaaaaaa Dependency Task [planning]" in r.text
+    assert memdb.pending_transition_requests() == []
+
+
+def test_post_move_allows_unblocked_backlog_task(app_client):
+    client, memdb, _ = app_client
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="done",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Unblocked Task", status="backlog", referenced_tasks=dep_id,
+    ))
+
+    r = client.post(
+        f"/actions/move/{task_id}",
+        data={"action": "move_forward"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    pending = memdb.pending_transition_requests()
+    assert len(pending) == 1
+    assert pending[0].task_id == task_id
+    assert pending[0].action == "move_forward"
+
+
+def test_post_move_after_backlog_ignores_unsatisfied_dependencies(app_client):
+    client, memdb, _ = app_client
+    dep_id = "aaaaaaaa-1111-2222-3333-444444444444"
+    task_id = "bbbbbbbb-1111-2222-3333-444444444444"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=dep_id, title="Dependency Task", status="planning",
+    ))
+    insert_test_task(memdb._connect_project(), _make_task(
+        id=task_id, title="Already Planning", status="planning", referenced_tasks=dep_id,
+    ))
+
+    r = client.post(
+        f"/actions/move/{task_id}",
+        data={"action": "move_forward"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    pending = memdb.pending_transition_requests()
+    assert len(pending) == 1
+    assert pending[0].task_id == task_id
 
 
 def test_post_move_rejects_unknown_action(app_client):

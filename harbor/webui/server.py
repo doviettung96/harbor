@@ -399,13 +399,8 @@ def create_app(
     def _attach_command(session: str | None) -> str:
         return state.tmux.attach_command(session) if session else ""
 
-    def _blockers_for(ctx: ProjectContext, task: Task) -> list[Task]:
-        out: list[Task] = []
-        for dep_id in task.referenced_task_ids:
-            dep = ctx.db.get_task(dep_id)
-            if dep is not None and dep.status not in ("review", "done"):
-                out.append(dep)
-        return out
+    def _blockers_for(ctx: ProjectContext, task: Task) -> list[Any]:
+        return task.blocking_dependencies
 
     def _is_session_live(session: str | None) -> bool:
         if not session:
@@ -448,6 +443,7 @@ def create_app(
             live_session=live_session,
             pane_capture="" if live_session else _capture_pane(task.session_name),
             attach_command=_attach_command(task.session_name),
+            dependencies=task.dependencies,
             blockers=_blockers_for(ctx, task),
             recent_requests=ctx.db.recent_transition_requests(task_id, limit=10),
             valid_statuses=VALID_STATUSES,
@@ -1025,6 +1021,14 @@ def create_app(
         task = ctx.db.get_task(task_id)
         if task is None:
             raise HTTPException(404, f"task {task_id!r} not found")
+        if task.status == "backlog" and action in {
+            "move_forward", "move_to_planning", "research",
+        } and not task.deps_satisfied:
+            blockers = ", ".join(
+                f"{dep.short_id} {dep.title} [{dep.status}]"
+                for dep in task.blocking_dependencies
+            )
+            raise HTTPException(409, f"task is blocked by dependencies: {blockers}")
         ctx.db.create_transition_request(
             task_id=task_id,
             action=action,

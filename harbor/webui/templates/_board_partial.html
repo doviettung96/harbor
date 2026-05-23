@@ -62,10 +62,19 @@
           >
             <span class="title">{{ task.title }}</span>
             <span class="meta">
+              <code>{{ task.short_id }}</code>
               <span class="agent">{{ task.agent }}</span>
               {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
               {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
             </span>
+            {% if task.dependencies %}
+              <span class="deps">
+                <strong>Blocked by:</strong>
+                {% for dep in task.dependencies %}
+                  <span><code>{{ dep.short_id }}</code> &mdash; {{ dep.title }} [{{ dep.status }}]</span>{% if not loop.last %}; {% endif %}
+                {% endfor %}
+              </span>
+            {% endif %}
           </a>
         {% else %}
           <div class="empty-col">No tasks</div>
