@@ -5,7 +5,20 @@
       <div class="muted">
         <code>{{ task.id[:8] }}</code>
         <span class="pill {% if task.status == 'done' %}ok{% elif task.escalation_note %}err{% endif %}">{{ task.status }}</span>
-        agent <code>{{ task.agent }}</code>
+        {% if agent_editable %}
+          <form method="post" action="/projects/{{ project.project.id }}/actions/task/{{ task.id }}/agent" class="inline">
+            <label>agent
+              <select name="agent" onchange="this.form.submit()" aria-label="Task agent">
+                {% for opt in agent_options %}
+                  <option value="{{ opt }}"{% if opt == task.agent %} selected{% endif %}>{{ opt }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <noscript><button type="submit">Set</button></noscript>
+          </form>
+        {% else %}
+          agent <code>{{ task.agent }}</code>
+        {% endif %}
       </div>
     </div>
     {% if drawer %}
@@ -101,6 +114,38 @@
     </div>
   </div>
 
+  {% if task.status == 'done' and (task.pr_url or task.worktree_path or task.branch_name) %}
+    <div class="panel">
+      <h2>Done: PR &amp; cleanup</h2>
+      <div class="panel-body">
+        {% if task.pr_url %}
+          <p style="margin-top:0;">
+            Pull request:
+            <a href="{{ task.pr_url }}" target="_blank" rel="noopener noreferrer">{{ task.pr_url }}</a>
+            {% if task.pr_number %}<span class="muted">(#{{ task.pr_number }})</span>{% endif %}
+          </p>
+        {% endif %}
+        {% if task.worktree_path %}
+          <p class="muted" style="margin: 4px 0;">
+            worktree: <code>{{ task.worktree_path }}</code>
+            {% if task.branch_name %}- branch <code>{{ task.branch_name }}</code>{% endif %}
+          </p>
+        {% endif %}
+        {% if task.worktree_path or task.branch_name %}
+          <form method="post" action="/projects/{{ project.project.id }}/actions/task/{{ task.id }}/cleanup-worktree" class="inline" style="margin-top:8px;"
+                onsubmit="return confirm('Remove the worktree and force-delete the local branch? Use this once the PR is merged.');">
+            <button type="submit" class="danger">Cleanup worktree &amp; branch</button>
+          </form>
+          <p class="muted" style="margin: 6px 0 0;">
+            Runs <code>git worktree remove --force</code> then <code>git branch -D</code>. The remote branch (and your PR) are unaffected.
+          </p>
+        {% else %}
+          <p class="muted" style="margin-top:0;">Worktree and branch already cleaned up.</p>
+        {% endif %}
+      </div>
+    </div>
+  {% endif %}
+
   <div class="panel">
     <h2>Actions</h2>
     <div class="panel-body" style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
@@ -114,15 +159,14 @@
       {% if task.status != 'done' %}
         <form method="post" action="/actions/move/{{ task.id }}" class="inline">
           <input type="hidden" name="action" value="move_forward">
-          <button type="submit">Move forward</button>
+          <button type="submit" title="{% if task.status == 'running' %}Running auto-advances to Review when agtx-task-verify reports passed. Click to force-advance now.{% else %}Advance to the next phase{% endif %}">{% if task.status == 'running' %}Force forward{% else %}Move forward{% endif %}</button>
         </form>
       {% endif %}
 
-      {% if task.status == 'backlog' %}
-        <form method="post" action="/actions/move/{{ task.id }}" class="inline">
-          <input type="hidden" name="action" value="research">
-          <button type="submit">Research</button>
-        </form>
+      {% if task.status == 'running' %}
+        <p class="muted" style="flex-basis: 100%; margin: 4px 0 0;">
+          Running auto-advances to Review when the worker reports <code>agtx-verify ... passed</code> and calls <code>move_forward</code> itself.
+        </p>
       {% endif %}
 
       <form method="post" action="/actions/move/{{ task.id }}" class="inline" style="display: flex; gap: 4px; align-items: center;">

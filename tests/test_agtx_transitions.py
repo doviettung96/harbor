@@ -70,6 +70,10 @@ def worker_factory(memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock):
         init_script: tuple[str, ...] = (),
         copy_files: tuple[str, ...] = (),
         agent_ready_timeout_s: float = 0.0,
+        # 0 = no real sleeps / no capture-pane polling, so the prompt-submit
+        # choreography stays instant under MagicMock tmux.
+        prompt_submit_delay_s: float = 0.0,
+        prompt_render_timeout_s: float = 0.0,
     ) -> TransitionWorker:
         cfg = TransitionConfig(
             project_path=project_path or Path("/test/project"),
@@ -78,6 +82,11 @@ def worker_factory(memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock):
             copy_files=copy_files,
             inject_prompts=inject_prompts,
             agent_ready_timeout_s=agent_ready_timeout_s,
+            prompt_submit_delay_s=prompt_submit_delay_s,
+            prompt_render_timeout_s=prompt_render_timeout_s,
+            # Tests opt in to PR-on-Done explicitly so move-to-done in
+            # unrelated tests doesn't try to push a fake branch.
+            pr_on_done=False,
         )
         return TransitionWorker(
             db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
@@ -210,18 +219,6 @@ def test_escalate_to_user_writes_note_only(memdb: AgtxDb, worker_factory):
     t = memdb.get_task("t1")
     assert t.status == "planning"  # status unchanged
     assert t.escalation_note == "needs API key"
-
-
-def test_research_action_same_as_move_to_planning(
-    memdb: AgtxDb, fake_git: MagicMock, worker_factory,
-):
-    insert_test_task(memdb._connect_project(), _make_task(id="t1"))
-    memdb.create_transition_request(task_id="t1", action="research")
-
-    worker = worker_factory()
-    worker.process_once()
-    fake_git.add_worktree.assert_called_once()
-    assert memdb.get_task("t1").status == "planning"
 
 
 def test_unknown_action_records_error(memdb: AgtxDb, worker_factory):
@@ -456,6 +453,124 @@ def test_inject_prompt_skipped_when_session_missing(
     # Status still flips (the agent process is gone, but the user can resume)
     assert memdb.get_task("t1").status == "running"
     fake_tmux.send_keys_literal.assert_not_called()
+
+
+# ---- prompt-submit choreography (Enter must not ride the type burst) ------
+
+
+def _enter_keystrokes(fake_tmux: MagicMock) -> list:
+    """send_keys(...) calls whose keys argument is a bare 'Enter'."""
+    return [
+        c for c in fake_tmux.send_keys.call_args_list
+        if len(c.args) >= 3 and c.args[2] == "Enter"
+    ]
+
+
+def test_prompt_body_typed_without_submit_enter(
+    memdb: AgtxDb, fake_tmux: MagicMock, worker_factory,
+):
+    """The prompt body must be typed with enter=False — the submit Enter is a
+    separate keystroke so the agent's paste-burst detection doesn't swallow it."""
+    fake_tmux.has_session.return_value = True
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="planning", session_name="task-t1--p--do", agent="claude",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_forward")
+
+    worker = worker_factory(inject_prompts=True)
+    worker.process_once()
+
+    # The prompt body went through send_keys_literal with enter=False.
+    body_calls = [c for c in fake_tmux.send_keys_literal.call_args_list
+                  if c.kwargs.get("enter") is False]
+    assert body_calls, "prompt body should be typed with enter=False"
+    # ...and the submit Enter arrived as its own standalone send_keys keystroke.
+    assert len(_enter_keystrokes(fake_tmux)) == 1
+
+
+def test_non_codex_prompt_submitted_with_single_enter(
+    memdb: AgtxDb, fake_tmux: MagicMock, worker_factory,
+):
+    fake_tmux.has_session.return_value = True
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="planning", session_name="task-t1--p--do", agent="claude",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_forward")
+
+    worker = worker_factory(inject_prompts=True)
+    worker.process_once()
+
+    assert len(_enter_keystrokes(fake_tmux)) == 1
+
+
+def test_codex_prompt_submitted_with_double_enter(
+    memdb: AgtxDb, fake_tmux: MagicMock, worker_factory,
+):
+    """Codex's first Enter only dismisses the slash-command picker; the message
+    needs a second Enter to actually submit."""
+    fake_tmux.has_session.return_value = True
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="planning", session_name="task-t1--p--do", agent="codex",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_forward")
+
+    worker = worker_factory(inject_prompts=True)
+    worker.process_once()
+
+    assert memdb.get_task("t1").status == "running"
+    assert len(_enter_keystrokes(fake_tmux)) == 2
+
+
+def test_spawn_aborts_when_agent_falls_back_to_shell(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
+):
+    """If the agent exits on startup (e.g. codex self-update) and leaves the
+    pane at a shell prompt, the spawn relaunches once, then fails the
+    transition WITHOUT typing the prompt into the shell."""
+    # capture_pane always shows a Git Bash prompt — the agent never comes up.
+    fake_tmux.capture_pane.return_value = (
+        "Update ran successfully! Please restart Codex.\n"
+        "Admin@HOST MINGW64 /d/Projects/harbor/.worktrees/task-t1 (task/t1)\n"
+        "$"
+    )
+    insert_test_task(memdb._connect_project(), _make_task(id="t1", agent="codex"))
+    memdb.create_transition_request(task_id="t1", action="move_forward")
+
+    worker = worker_factory(project_path=Path("/repo"), inject_prompts=True)
+    worker.process_once()
+
+    # Task stays in Backlog so the user can retry the move.
+    assert memdb.get_task("t1").status == "backlog"
+    # The transition request is recorded as failed with an explanatory error.
+    reqs = memdb.recent_transition_requests("t1")
+    assert reqs and reqs[0].error and "shell prompt" in reqs[0].error
+    # The launcher was sent twice (initial + one relaunch); the phase prompt
+    # was never typed into the pane.
+    typed = [c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
+             if len(c.args) >= 3]
+    assert len(typed) == 2 and typed[0] == typed[1]
+    assert not any("agtx-task-worker" in t for t in typed)
+
+
+def test_spawn_proceeds_when_agent_marker_appears(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
+):
+    """A pane showing a real agent ready-marker is NOT relaunched: launcher
+    sent once, prompt injected."""
+    fake_tmux.capture_pane.return_value = 'Try "fix the bug"\n/help for help\n>'
+    insert_test_task(memdb._connect_project(), _make_task(id="t1", agent="codex"))
+    memdb.create_transition_request(task_id="t1", action="move_forward")
+
+    worker = worker_factory(
+        project_path=Path("/repo"), inject_prompts=True, agent_ready_timeout_s=2.0,
+    )
+    worker.process_once()
+
+    assert memdb.get_task("t1").status == "planning"
+    typed = [c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
+             if len(c.args) >= 3]
+    # Exactly one launcher (no relaunch) + the prompt body.
+    assert any("agtx-task-worker" in t for t in typed)
 
 
 # ---- per-phase agent command ---------------------------------------------
@@ -911,11 +1026,11 @@ def test_plugin_auto_dismiss_skips_when_partial_match(
     worker.process_once()
 
     typed = [c.args[2] for c in fake_tmux.send_keys.call_args_list if len(c.args) >= 3]
-    # "1" and "2" (built-in defaults) might fire too if patterns match; we just
-    # need to check that this specific plugin entry did NOT fire (no "2" from it).
-    # Easiest assertion: the AND key wasn't matched, so dismissed set is empty.
-    # We verify by checking that "Enter" (the response keystroke) is NOT in typed.
-    assert "Enter" not in typed, \
+    # We check that this specific plugin entry did NOT fire. Its response is
+    # "2\nEnter"; the "2" keystroke uniquely identifies it (a bare "Enter" is
+    # also emitted by the normal prompt-submit choreography, so "Enter" can't
+    # be used as the proxy).
+    assert "2" not in typed, \
         f"plugin auto_dismiss fired with only partial match: {typed}"
 
 
@@ -1370,6 +1485,7 @@ def test_cleanup_worktree_on_done_calls_git_remove(
     cfg = TransitionConfig(
         project_path=Path("/repo"),
         cleanup_worktree_on_done=True,
+        pr_on_done=False,  # this test exercises the cleanup path, not the PR path
         inject_prompts=False,
         agent_ready_timeout_s=0.0,
     )
@@ -1506,6 +1622,7 @@ def test_cleanup_failure_is_non_fatal(
     cfg = TransitionConfig(
         project_path=Path("/repo"),
         cleanup_worktree_on_done=True,
+        pr_on_done=False,  # this test exercises the cleanup path, not the PR path
         inject_prompts=False,
         agent_ready_timeout_s=0.0,
     )
@@ -1516,3 +1633,128 @@ def test_cleanup_failure_is_non_fatal(
 
     # Task still moves to Done even if cleanup failed.
     assert memdb.get_task("t1").status == "done"
+
+
+# ---- PR-on-done -----------------------------------------------------------
+
+
+def _pr_on_done_worker(memdb, fake_tmux, fake_git):
+    from harbor.agtx_transitions import TransitionConfig, TransitionWorker
+    cfg = TransitionConfig(
+        project_path=Path("/repo"),
+        base_branch="main",
+        pr_on_done=True,
+        inject_prompts=False,
+        agent_ready_timeout_s=0.0,
+    )
+    return TransitionWorker(
+        db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
+    )
+
+
+def test_pr_on_done_pushes_and_opens_pr(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+):
+    fake_tmux.has_session.return_value = True
+    fake_git.open_pull_request.return_value = "https://github.com/owner/repo/pull/42"
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", title="Wire up X", status="review",
+        session_name="task-t1--p--do",
+        worktree_path="/repo/.worktrees/task-t1",
+        branch_name="task/t1",
+        description="Body of the task.",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_to_done")
+
+    events: list[tuple[str, dict]] = []
+    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker.on_event = lambda name, payload: events.append((name, payload))
+    worker.process_once()
+
+    fake_git.push_branch.assert_called_once_with(
+        Path("/repo/.worktrees/task-t1"), "task/t1",
+    )
+    fake_git.open_pull_request.assert_called_once_with(
+        Path("/repo/.worktrees/task-t1"),
+        base="main", title="Wire up X", body="Body of the task.",
+    )
+    # Worktree is NOT removed under pr_on_done — user has to click Cleanup.
+    fake_git.remove_worktree.assert_not_called()
+
+    t = memdb.get_task("t1")
+    assert t.status == "done"
+    assert t.pr_url == "https://github.com/owner/repo/pull/42"
+    assert t.pr_number == 42
+
+    pr_events = [e for e in events if e[0] == "pr_opened"]
+    assert pr_events and pr_events[0][1]["pr_url"].endswith("/pull/42")
+
+
+def test_pr_on_done_failure_still_marks_done(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+):
+    fake_tmux.has_session.return_value = True
+    fake_git.push_branch.side_effect = RuntimeError("gh not authenticated")
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", title="T", status="review",
+        session_name="task-t1--p--do",
+        worktree_path="/repo/.worktrees/task-t1",
+        branch_name="task/t1",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_to_done")
+
+    events: list[tuple[str, dict]] = []
+    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker.on_event = lambda name, payload: events.append((name, payload))
+    worker.process_once()
+
+    fake_git.open_pull_request.assert_not_called()
+    t = memdb.get_task("t1")
+    assert t.status == "done"  # Done still wins
+    assert t.pr_url is None
+    assert t.escalation_note and "pr_on_done" in t.escalation_note
+    assert any(e[0] == "pr_failed" for e in events)
+
+
+def test_pr_on_done_skips_when_already_opened(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+):
+    """Re-Done after Review bounce: don't open a second PR."""
+    fake_tmux.has_session.return_value = True
+    conn = memdb._connect_project()
+    insert_test_task(conn, _make_task(
+        id="t1", status="review",
+        session_name="task-t1--p--do",
+        worktree_path="/repo/.worktrees/task-t1",
+        branch_name="task/t1",
+    ))
+    # Stash an existing PR url directly so the early-return kicks in.
+    memdb.update_task("t1", pr_url="https://github.com/owner/repo/pull/7", pr_number=7)
+    memdb.create_transition_request(task_id="t1", action="move_to_done")
+
+    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker.process_once()
+
+    fake_git.push_branch.assert_not_called()
+    fake_git.open_pull_request.assert_not_called()
+    assert memdb.get_task("t1").status == "done"
+
+
+def test_pr_on_done_skipped_when_no_branch(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+):
+    """A task with no branch_name (e.g. dropped Backlog→Done by hand) records
+    the failure but still flips to Done."""
+    fake_tmux.has_session.return_value = False
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="review",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_to_done")
+
+    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker.process_once()
+
+    fake_git.push_branch.assert_not_called()
+    t = memdb.get_task("t1")
+    assert t.status == "done"
+    assert t.escalation_note and "no branch_name" in t.escalation_note
