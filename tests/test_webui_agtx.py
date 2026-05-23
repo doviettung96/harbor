@@ -122,12 +122,13 @@ def test_sidebar_renders_track_project_form(app_client):
 
 def test_board_partial_renders(app_client):
     client, memdb, _ = app_client
-    insert_test_task(memdb._connect_project(), _make_task(id="t1", title="Hello"))
+    insert_test_task(memdb._connect_project(), _make_task(id="abcdef12-3456-7890-abcd-ef1234567890", title="Hello"))
     r = client.get("/_partials/board")
     assert r.status_code == 200
     assert "Hello" in r.text
-    assert 'data-partial-url="/_partials/task/t1"' in r.text
-    assert 'href="/projects/default?task=t1"' in r.text
+    assert "<code>abcdef12</code>" in r.text
+    assert 'data-partial-url="/_partials/task/abcdef12-3456-7890-abcd-ef1234567890"' in r.text
+    assert 'href="/projects/default?task=abcdef12-3456-7890-abcd-ef1234567890"' in r.text
 
 
 def test_board_preloads_task_drawer_from_query(app_client):
