@@ -31,7 +31,7 @@ Do not invoke for casual chatter or single-task requests where direct execution 
 
 6. **Per-task acceptance interview — sequential, one task at a time.**
 
-   For each candidate task, present it and ask four numbered questions. Wait for the user to answer all four before moving to the next task.
+   For each candidate task, present it and ask five numbered questions. Wait for the user to answer all five before moving to the next task.
 
    Format:
    ```
@@ -49,14 +49,19 @@ Do not invoke for casual chatter or single-task requests where direct execution 
 
    4. Worker instructions — what per-task prompt instructions should this worker receive?
       (Use this for exclusive resources such as "claim emulator-5554"; type `none` if no extra instructions.)
+
+   5. Run repo-default build/tests during verification? (yes / no)
+      yes = after the probes above pass, verification ALSO invokes the build-and-test skill, which discovers and runs the repo's documented build + test commands. Use this for changes that touch shared code or could regress unrelated parts of the repo.
+      no  = verification runs ONLY the probes above. Use this for isolated tasks, docs-only edits, or scaffolding where the wider repo's health isn't at risk.
    ```
 
    - If the user types `default` for question 3, copy the repo default into the task's `## Runtime Target`.
    - If the user types `none` for question 4, write `none` under `## Worker Instructions`.
+   - For question 5, accept `yes`/`y`/`true` as opt-in and `no`/`n`/`false` as opt-out. If the user is unsure, recommend `yes` whenever the task touches code shared across modules, and `no` for purely local or docs-only changes.
    - If the user gives partial answers, prompt for the missing field. Do not synthesize.
    - If the user says "skip" for a task, drop it from the list and tell them you dropped it.
 
-7. **Build descriptions** by appending four fixed sections to each task's body:
+7. **Build descriptions** by appending five fixed sections to each task's body:
 
    ```
    <original 2-5 sentence description>
@@ -72,9 +77,12 @@ Do not invoke for casual chatter or single-task requests where direct execution 
 
    ## Worker Instructions
    <per-task instructions, or `none`>
+
+   ## Run Repo Defaults
+   <yes or no, normalized from Q5>
    ```
 
-   Use the exact section headers (`## Acceptance Criteria`, `## Verification Probes`, `## Runtime Target`, `## Worker Instructions`). The worker parses by header — typos break it.
+   Use the exact section headers (`## Acceptance Criteria`, `## Verification Probes`, `## Runtime Target`, `## Worker Instructions`, `## Run Repo Defaults`). The worker and verify skills parse by header — typos break them.
 
 8. **Show full preview.** Print every task with title, description, the three header sections, and dependencies. Then ask: "Send these N tasks to agtx? (yes / edit <N> / cancel)"
 
@@ -100,6 +108,8 @@ transition so downstream automation can sync.
 2. What command(s) should the worker run to check it?
 3. Runtime target — does this task need its own emulator/device/game window?
    Or use repo default `device: 127.0.0.1:5555 (adb)`?
+4. Worker instructions?
+5. Run repo-default build/tests during verification? (yes / no)
 ```
 
 User answers:
@@ -109,19 +119,23 @@ User answers:
    adb -s 127.0.0.1:5555 logcat -d | rg 'SCENE_OK boot'
 3. default
 4. Claim device 127.0.0.1:5555 for this task. For ADB commands, pass `-s 127.0.0.1:5555` or set `ANDROID_SERIAL=127.0.0.1:5555`.
+5. yes
 ```
 
-Resulting `## Verification Probes` section:
+Resulting trailing sections:
 ```
 ## Verification Probes
 - python scripts/probes/scene_transition.py --scene boot
 - adb -s 127.0.0.1:5555 logcat -d | rg 'SCENE_OK boot'
+
+## Run Repo Defaults
+yes
 ```
 
 ## Hard Rules
 
 - Do not call `create_task` or `create_tasks_batch` until step 10. Steps 1–9 are conversation only.
 - Do not invent acceptance criteria. If the user is vague ("the worker can decide"), push back: "What concrete observable do you want to see?"
-- Do not omit any of the four sections. Even for trivial tasks, the worker expects the section layout.
+- Do not omit any of the five sections. Even for trivial tasks, the worker expects the section layout.
 - Do not edit existing tasks (`update_task`) here — sweep is for creation only. Direct the user to the agtx TUI for edits.
 - A "tests pass" answer to question 1 is rejected. Re-prompt for an artifact, log line, or game state.

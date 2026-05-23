@@ -42,12 +42,14 @@ from ..agtx_client import (
     VALID_STATUSES,
     global_db_path,
     project_db_path,
+    strip_extended_length_prefix,
 )
 from ..agtx_transitions import (
     CODEX_GOAL_HEADER,
     DEFAULT_AGENT_COMMAND,
     DEFAULT_BASE_BRANCH,
     DEFAULT_WORKTREE_DIR,
+    GitOps,
     TransitionConfig,
     TransitionWorker,
     WORKER_INSTRUCTIONS_HEADER,
@@ -81,7 +83,6 @@ ALLOWED_MOVE_ACTIONS = frozenset({
     "move_to_running",
     "move_to_review",
     "move_to_done",
-    "research",
     "resume",
     "escalate_to_user",
 })
@@ -117,6 +118,7 @@ class WebuiOptions:
     copy_files: tuple[str, ...]
     inject_prompts: bool
     cleanup_worktree_on_done: bool
+    pr_on_done: bool
     plugin: str | None
 
 
@@ -170,7 +172,9 @@ class GlobalWebuiState:
         return db.list_projects()
 
     def _context_for(self, project: Project) -> ProjectContext:
-        project_path = Path(project.path)
+        # Strip the canonical `\\?\` prefix: the DB hash needs it (passed via
+        # `project.path` below), but git/tmux/the pane shell all reject it.
+        project_path = strip_extended_length_prefix(project.path)
         db_path = project_db_path(project.path)
         db = self.project_dbs.get(project.id) if self.project_dbs else None
         if db is None:
@@ -262,6 +266,7 @@ def create_app(
     agent_command_by_phase: dict[str, list[str]] | None = None,
     agent_command_by_agent: dict[str, list[str]] | None = None,
     cleanup_worktree_on_done: bool = False,
+    pr_on_done: bool = True,
     plugin: str | None = None,
     autostart_worker: bool = True,
     db: AgtxDb | None = None,
@@ -306,6 +311,7 @@ def create_app(
         copy_files=tuple(copy_files),
         inject_prompts=inject_prompts,
         cleanup_worktree_on_done=cleanup_worktree_on_done,
+        pr_on_done=pr_on_done,
         plugin=plugin,
     )
 
@@ -393,13 +399,8 @@ def create_app(
     def _attach_command(session: str | None) -> str:
         return state.tmux.attach_command(session) if session else ""
 
-    def _blockers_for(ctx: ProjectContext, task: Task) -> list[Task]:
-        out: list[Task] = []
-        for dep_id in task.referenced_task_ids:
-            dep = ctx.db.get_task(dep_id)
-            if dep is not None and dep.status not in ("review", "done"):
-                out.append(dep)
-        return out
+    def _blockers_for(ctx: ProjectContext, task: Task) -> list[Any]:
+        return task.blocking_dependencies
 
     def _is_session_live(session: str | None) -> bool:
         if not session:
@@ -408,6 +409,19 @@ def create_app(
             return state.tmux.has_session(session)
         except Exception:
             return False
+
+    def _agent_options_for(ctx: ProjectContext, task: Task) -> list[str]:
+        """Agent names offered in the per-task agent dropdown.
+
+        The configured `agent_command_by_agent` keys (harbor.yml + any
+        `--map-agent` CLI overrides) plus the task's current agent, so the
+        existing value is always selectable even if it was never mapped.
+        """
+        tc = _transition_config_for(ctx, state.runtime.cfg, state.options)
+        opts = set(tc.agent_command_by_agent)
+        if task.agent:
+            opts.add(task.agent)
+        return sorted(opts)
 
     def _task_detail_context(
         request: Request,
@@ -429,11 +443,16 @@ def create_app(
             live_session=live_session,
             pane_capture="" if live_session else _capture_pane(task.session_name),
             attach_command=_attach_command(task.session_name),
+            dependencies=task.dependencies,
             blockers=_blockers_for(ctx, task),
             recent_requests=ctx.db.recent_transition_requests(task_id, limit=10),
             valid_statuses=VALID_STATUSES,
             codex_goal_enabled=task_codex_goal_enabled(task),
             worker_instructions=task_worker_instructions(task),
+            agent_options=_agent_options_for(ctx, task),
+            # The agent CLI is chosen at spawn time; once a tmux session
+            # exists the running agent is fixed, so editing is Backlog-only.
+            agent_editable=not task.session_name,
         )
 
     def _planning_session_prefix(ctx: ProjectContext) -> str:
@@ -1002,6 +1021,14 @@ def create_app(
         task = ctx.db.get_task(task_id)
         if task is None:
             raise HTTPException(404, f"task {task_id!r} not found")
+        if task.status == "backlog" and action in {
+            "move_forward", "move_to_planning", "research",
+        } and not task.deps_satisfied:
+            blockers = ", ".join(
+                f"{dep.short_id} {dep.title} [{dep.status}]"
+                for dep in task.blocking_dependencies
+            )
+            raise HTTPException(409, f"task is blocked by dependencies: {blockers}")
         ctx.db.create_transition_request(
             task_id=task_id,
             action=action,
@@ -1124,6 +1151,92 @@ def create_app(
             codex_goal,
         )
 
+    @app.post("/projects/{project_id}/actions/task/{task_id}/agent")
+    async def action_task_agent(
+        project_id: str,
+        task_id: str,
+        agent: str = Form(...),
+    ) -> RedirectResponse:
+        ctx = state.get_project(project_id)
+        task = ctx.db.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, f"task {task_id!r} not found")
+        # The agent CLI is launched when the task's tmux session spawns;
+        # changing the agent afterwards would not affect the running session.
+        if task.session_name:
+            raise HTTPException(
+                409,
+                f"cannot change agent: task {task_id!r} already has a tmux "
+                f"session ({task.session_name}); move it back to Backlog first",
+            )
+        agent = agent.strip()
+        allowed = set(_agent_options_for(ctx, task))
+        if agent not in allowed:
+            raise HTTPException(
+                400,
+                f"unknown agent {agent!r}; expected one of {sorted(allowed)}",
+            )
+        ctx.db.update_task(task_id, agent=agent)
+        return RedirectResponse(f"/projects/{project_id}?task={task_id}", status_code=303)
+
+    @app.post("/actions/task/{task_id}/agent")
+    async def compat_action_task_agent(
+        task_id: str,
+        agent: str = Form(...),
+    ) -> RedirectResponse:
+        ctx = state.current_project()
+        return await action_task_agent(ctx.project.id, task_id, agent)
+
+    @app.post("/projects/{project_id}/actions/task/{task_id}/cleanup-worktree")
+    async def action_task_cleanup_worktree(
+        project_id: str,
+        task_id: str,
+    ) -> RedirectResponse:
+        """Remove the task's worktree and force-delete its branch.
+
+        Refuses unless the task is Done — pre-Done tasks still need the
+        worktree alive. After cleanup, clears worktree_path/branch_name on
+        the row so the Done view stops offering the button.
+        """
+        ctx = state.get_project(project_id)
+        task = ctx.db.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, f"task {task_id!r} not found")
+        if task.status != "done":
+            raise HTTPException(
+                409,
+                f"cleanup-worktree requires status=done (got {task.status!r})",
+            )
+        if not task.worktree_path and not task.branch_name:
+            raise HTTPException(409, "task has no worktree or branch to clean up")
+        git = GitOps()
+        if task.worktree_path:
+            wt = Path(task.worktree_path)
+            try:
+                git.remove_worktree(ctx.path, wt)
+            except Exception as exc:  # noqa: BLE001 — surface via 500
+                raise HTTPException(
+                    500, f"git worktree remove failed: {exc}",
+                ) from exc
+        if task.branch_name:
+            try:
+                git.delete_branch(ctx.path, task.branch_name)
+            except Exception as exc:  # noqa: BLE001
+                # Worktree removed but branch delete failed (e.g. checked out
+                # elsewhere): leave the row alone so the user can retry.
+                raise HTTPException(
+                    500, f"git branch -D failed: {exc}",
+                ) from exc
+        ctx.db.update_task(task_id, worktree_path=None, branch_name=None)
+        return RedirectResponse(
+            f"/projects/{project_id}?task={task_id}", status_code=303,
+        )
+
+    @app.post("/actions/task/{task_id}/cleanup-worktree")
+    async def compat_action_task_cleanup_worktree(task_id: str) -> RedirectResponse:
+        ctx = state.current_project()
+        return await action_task_cleanup_worktree(ctx.project.id, task_id)
+
     return app
 
 
@@ -1180,11 +1293,18 @@ def _transition_config_for(
     if plugin_name:
         resolved_plugin = load_plugin(plugin_name, repo_root=ctx.path)
 
+    # harbor.yml's `agtx.agent_command_by_agent` is the base map; the webui's
+    # `--map-agent` CLI flags overlay it per-key so a one-off override wins.
+    resolved_agent_command_by_agent: dict[str, tuple[str, ...]] = dict(
+        cfg.agtx_agent_command_by_agent
+    )
+    resolved_agent_command_by_agent.update(options.agent_command_by_agent)
+
     return TransitionConfig(
         project_path=ctx.path,
         agent_command=resolved_agent_command,
         agent_command_by_phase=options.agent_command_by_phase,
-        agent_command_by_agent=options.agent_command_by_agent,
+        agent_command_by_agent=resolved_agent_command_by_agent,
         base_branch=options.base_branch,
         worktree_dir=options.worktree_dir,
         init_script=options.init_script,
@@ -1192,6 +1312,7 @@ def _transition_config_for(
         prompt_append=cfg.agtx_prompt_append,
         inject_prompts=options.inject_prompts,
         cleanup_worktree_on_done=options.cleanup_worktree_on_done,
+        pr_on_done=options.pr_on_done,
         default_shell=cfg.default_shell,
         plugin=resolved_plugin,
     )

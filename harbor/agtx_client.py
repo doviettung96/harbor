@@ -214,7 +214,34 @@ def canonical_project_path_str(project_path: str | Path) -> str:
     return raw
 
 
+def strip_extended_length_prefix(path: str | Path) -> Path:
+    r"""Return `path` with any Windows extended-length `\\?\` prefix removed.
+
+    Harbor stores project paths in agtx's canonical `\\?\`-prefixed form (see
+    `canonical_project_path_str`) so the per-project DB hash lines up with
+    agtx's Rust canonicalization. That form is fine for hashing but poisons
+    anything that shells out: `git worktree add`, tmux's session cwd, and the
+    `cd` inside the pane launcher all reject it. Use this whenever a stored
+    project/worktree path is about to be handed to git, tmux, or a shell.
+    """
+    s = str(path)
+    if s.startswith("\\\\?\\"):
+        s = s[4:]
+    return Path(s)
+
+
 # ---- Dataclasses (mirror D:/Projects/agtx/src/db/models.rs) ---------------
+
+
+@dataclass
+class TaskDependency:
+    id: str
+    title: str
+    status: str
+
+    @property
+    def short_id(self) -> str:
+        return self.id[:8]
 
 
 @dataclass
@@ -237,12 +264,25 @@ class Task:
     base_branch: str | None = None
     created_at: str = ""  # RFC 3339
     updated_at: str = ""
+    dependencies: list[TaskDependency] = field(default_factory=list)
+
+    @property
+    def short_id(self) -> str:
+        return self.id[:8]
 
     @property
     def referenced_task_ids(self) -> list[str]:
         if not self.referenced_tasks:
             return []
         return [s for s in (p.strip() for p in self.referenced_tasks.split(",")) if s]
+
+    @property
+    def blocking_dependencies(self) -> list[TaskDependency]:
+        return [dep for dep in self.dependencies if dep.status != "done"]
+
+    @property
+    def deps_satisfied(self) -> bool:
+        return not self.blocking_dependencies
 
     def content_text(self) -> str:
         return self.description if self.description else self.title
@@ -396,12 +436,52 @@ class AgtxDb:
         sql += " ORDER BY created_at"
         conn = self._connect_project()
         rows = conn.execute(sql, params).fetchall()
-        return [_task_from_row(r) for r in rows]
+        tasks = [_task_from_row(r) for r in rows]
+        self._resolve_task_dependencies(conn, tasks)
+        return tasks
 
     def get_task(self, task_id: str) -> Task | None:
         conn = self._connect_project()
         row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        return _task_from_row(row) if row else None
+        if row is None:
+            return None
+        task = _task_from_row(row)
+        self._resolve_task_dependencies(conn, [task])
+        return task
+
+    @staticmethod
+    def _resolve_task_dependencies(conn: sqlite3.Connection, tasks: list[Task]) -> None:
+        dep_ids: list[str] = []
+        seen: set[str] = set()
+        for task in tasks:
+            for dep_id in task.referenced_task_ids:
+                if dep_id not in seen:
+                    dep_ids.append(dep_id)
+                    seen.add(dep_id)
+        if not dep_ids:
+            return
+
+        placeholders = ", ".join("?" for _ in dep_ids)
+        rows = conn.execute(
+            f"SELECT id, title, status FROM tasks WHERE id IN ({placeholders})",
+            dep_ids,
+        ).fetchall()
+        resolved = {
+            row["id"]: TaskDependency(
+                id=row["id"],
+                title=row["title"],
+                status=row["status"],
+            )
+            for row in rows
+        }
+        for task in tasks:
+            task.dependencies = [
+                resolved.get(
+                    dep_id,
+                    TaskDependency(id=dep_id, title="missing task", status="missing"),
+                )
+                for dep_id in task.referenced_task_ids
+            ]
 
     def update_task(self, task_id: str, **fields: Any) -> None:
         if not fields:
