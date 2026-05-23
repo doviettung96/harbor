@@ -383,6 +383,83 @@ def test_post_kill_invokes_tmux_kill(app_client):
     fake_tmux.kill_session.assert_called_once_with("task-fake")
 
 
+# ---- cleanup-worktree endpoint -------------------------------------------
+
+
+def _insert_done_task_with_worktree(memdb):
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t-done", title="Wrapped task", status="done",
+    ))
+    memdb.update_task(
+        "t-done",
+        worktree_path="/repo/.worktrees/task-t-done",
+        branch_name="task/t-done",
+    )
+
+
+def test_cleanup_worktree_removes_and_clears_fields(app_client):
+    client, memdb, _ = app_client
+    _insert_done_task_with_worktree(memdb)
+    fake_git = MagicMock()
+    with patch.object(server_mod, "GitOps", return_value=fake_git):
+        r = client.post(
+            "/actions/task/t-done/cleanup-worktree",
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    fake_git.remove_worktree.assert_called_once()
+    fake_git.delete_branch.assert_called_once()
+    t = memdb.get_task("t-done")
+    assert t.worktree_path is None
+    assert t.branch_name is None
+
+
+def test_cleanup_worktree_rejects_non_done(app_client):
+    client, memdb, _ = app_client
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="review", session_name="task-t1",
+    ))
+    memdb.update_task("t1", worktree_path="/repo/.worktrees/t1")
+    fake_git = MagicMock()
+    with patch.object(server_mod, "GitOps", return_value=fake_git):
+        r = client.post(
+            "/actions/task/t1/cleanup-worktree",
+            follow_redirects=False,
+        )
+    assert r.status_code == 409
+    fake_git.remove_worktree.assert_not_called()
+
+
+def test_cleanup_worktree_rejects_when_nothing_to_clean(app_client):
+    client, memdb, _ = app_client
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t-done", status="done",
+    ))  # no worktree or branch
+    fake_git = MagicMock()
+    with patch.object(server_mod, "GitOps", return_value=fake_git):
+        r = client.post(
+            "/actions/task/t-done/cleanup-worktree",
+            follow_redirects=False,
+        )
+    assert r.status_code == 409
+
+
+def test_done_view_renders_pr_url_and_cleanup_button(app_client):
+    client, memdb, _ = app_client
+    _insert_done_task_with_worktree(memdb)
+    memdb.update_task(
+        "t-done",
+        pr_url="https://github.com/owner/repo/pull/77",
+        pr_number=77,
+    )
+    r = client.get("/_partials/task/t-done")
+    assert r.status_code == 200
+    body = r.text
+    assert "https://github.com/owner/repo/pull/77" in body
+    assert "Cleanup worktree" in body
+    assert "/actions/task/t-done/cleanup-worktree" in body
+
+
 def test_project_init_registers_project_from_ui(tmp_path: Path, monkeypatch):
     fake_config = tmp_path / "agtx-config"
     project_dir = tmp_path / "new-project"
@@ -822,6 +899,198 @@ def test_settings_save_updates_session_command_plugin_and_shell(
     assert "plugin: agtx-workflow-template" in text
     assert "default_shell: C:/Program Files/Git/bin/bash.exe" in text
     assert "prompt_append: shared" in text
+
+
+def _ctx_and_options(tmp_path: Path, memdb: AgtxDb, *, cli_map=None):
+    """Build a minimal ProjectContext + WebuiOptions for _transition_config_for."""
+    ctx = server_mod.ProjectContext(
+        project=Project(id="p1", name="proj", path=str(tmp_path)),
+        path=tmp_path,
+        db_path=tmp_path / "x.db",
+        db=memdb,
+        db_initialized=True,
+        config_path=tmp_path / "harbor.yml",
+        config_status="ok",
+    )
+    options = server_mod.WebuiOptions(
+        agent_command=None,
+        agent_command_by_phase={},
+        agent_command_by_agent=cli_map or {},
+        base_branch="main",
+        worktree_dir=".worktrees",
+        init_script=(),
+        copy_files=(),
+        inject_prompts=True,
+        cleanup_worktree_on_done=False,
+        pr_on_done=False,
+        plugin=None,
+    )
+    return ctx, options
+
+
+def test_transition_config_uses_harbor_yml_agent_map(tmp_path: Path, memdb: AgtxDb):
+    """harbor.yml's agent_command_by_agent feeds TransitionConfig: the global
+    agent_command targets the manual session, each task agent its own worker."""
+    from harbor.agent import Config
+
+    cfg = Config(
+        profiles={},
+        default_profile="balanced",
+        agtx_agent_command=("claude", "--dangerously-skip-permissions"),
+        agtx_agent_command_by_agent={
+            "codex": ("codex", "--yolo"),
+            "claude": ("claude", "--dangerously-skip-permissions"),
+        },
+    )
+    ctx, options = _ctx_and_options(tmp_path, memdb)
+    tc = server_mod._transition_config_for(ctx, cfg, options)
+    assert tc.agent_command == ("claude", "--dangerously-skip-permissions")
+    assert tc.agent_command_by_agent == {
+        "codex": ("codex", "--yolo"),
+        "claude": ("claude", "--dangerously-skip-permissions"),
+    }
+
+
+def test_transition_config_cli_map_agent_overrides_harbor_yml(
+    tmp_path: Path, memdb: AgtxDb,
+):
+    """A `--map-agent` CLI flag wins over the harbor.yml entry for the same key."""
+    from harbor.agent import Config
+
+    cfg = Config(
+        profiles={},
+        default_profile="balanced",
+        agtx_agent_command_by_agent={"codex": ("codex", "--yolo")},
+    )
+    ctx, options = _ctx_and_options(
+        tmp_path, memdb, cli_map={"codex": ("codex", "-m", "gpt-5.5")},
+    )
+    tc = server_mod._transition_config_for(ctx, cfg, options)
+    assert tc.agent_command_by_agent["codex"] == ("codex", "-m", "gpt-5.5")
+
+
+_AGENT_MAP_YML = (
+    "agtx:\n"
+    "  agent_command_by_agent:\n"
+    "    codex: \"codex --yolo\"\n"
+    "    claude: \"claude\"\n"
+)
+
+
+def test_task_agent_dropdown_changes_backlog_task(tmp_path: Path, memdb: AgtxDb):
+    runtime_yml = tmp_path / "runtime.yml"
+    runtime_yml.write_text(_AGENT_MAP_YML, encoding="utf-8")
+    insert_test_task(
+        memdb._connect_project(),
+        _make_task(id="t1", status="backlog", agent="claude"),
+    )
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path, db=memdb, autostart_worker=False, runtime_config_path=runtime_yml,
+        )
+        with TestClient(app) as client:
+            r = client.post(
+                "/projects/default/actions/task/t1/agent",
+                data={"agent": "codex"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 303
+            assert r.headers["location"] == "/projects/default?task=t1"
+    assert memdb.get_task("t1").agent == "codex"
+
+
+def test_task_agent_change_rejected_when_session_exists(tmp_path: Path, memdb: AgtxDb):
+    """Once a task has a tmux session the agent CLI is already running; the
+    route refuses the change instead of silently doing nothing."""
+    runtime_yml = tmp_path / "runtime.yml"
+    runtime_yml.write_text(_AGENT_MAP_YML, encoding="utf-8")
+    insert_test_task(
+        memdb._connect_project(),
+        _make_task(id="t1", status="running", agent="claude", session_name="task-foo"),
+    )
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = True
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path, db=memdb, autostart_worker=False, runtime_config_path=runtime_yml,
+        )
+        with TestClient(app) as client:
+            r = client.post(
+                "/projects/default/actions/task/t1/agent",
+                data={"agent": "codex"},
+                follow_redirects=False,
+            )
+            assert r.status_code == 409
+    assert memdb.get_task("t1").agent == "claude"
+
+
+def test_task_agent_change_rejects_unknown_agent(tmp_path: Path, memdb: AgtxDb):
+    runtime_yml = tmp_path / "runtime.yml"
+    runtime_yml.write_text(_AGENT_MAP_YML, encoding="utf-8")
+    insert_test_task(
+        memdb._connect_project(),
+        _make_task(id="t1", status="backlog", agent="claude"),
+    )
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path, db=memdb, autostart_worker=False, runtime_config_path=runtime_yml,
+        )
+        with TestClient(app) as client:
+            r = client.post(
+                "/projects/default/actions/task/t1/agent",
+                data={"agent": "gemini"},  # not configured, not current
+                follow_redirects=False,
+            )
+            assert r.status_code == 400
+    assert memdb.get_task("t1").agent == "claude"
+
+
+def test_task_drawer_renders_agent_dropdown_for_backlog(tmp_path: Path, memdb: AgtxDb):
+    runtime_yml = tmp_path / "runtime.yml"
+    runtime_yml.write_text(_AGENT_MAP_YML, encoding="utf-8")
+    insert_test_task(
+        memdb._connect_project(),
+        _make_task(id="t1", status="backlog", agent="claude"),
+    )
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path, db=memdb, autostart_worker=False, runtime_config_path=runtime_yml,
+        )
+        with TestClient(app) as client:
+            r = client.get("/_partials/task/t1")
+    assert r.status_code == 200
+    assert '<select name="agent"' in r.text
+    assert 'value="codex"' in r.text
+    assert 'value="claude" selected' in r.text
+
+
+def test_task_drawer_renders_agent_label_when_session_exists(
+    tmp_path: Path, memdb: AgtxDb,
+):
+    insert_test_task(
+        memdb._connect_project(),
+        _make_task(id="t1", status="running", agent="codex", session_name="task-foo"),
+    )
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = True
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(tmp_path, db=memdb, autostart_worker=False)
+        with TestClient(app) as client:
+            r = client.get("/_partials/task/t1")
+    assert r.status_code == 200
+    assert '<select name="agent"' not in r.text
+    assert "agent <code>codex</code>" in r.text
 
 
 def test_settings_saved_agent_command_controls_new_planning_sessions(

@@ -123,6 +123,55 @@ def test_agtx_agent_command_absent_returns_none(tmp_path: Path):
     assert cfg.agtx_agent_command is None
 
 
+def test_agtx_agent_command_by_agent_from_yaml(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  agent_command: \"claude --dangerously-skip-permissions\"\n"
+        "  agent_command_by_agent:\n"
+        "    codex: \"codex --yolo\"\n"
+        "    claude:\n"
+        "      - claude\n"
+        "      - --dangerously-skip-permissions\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert cfg.agtx_agent_command == ("claude", "--dangerously-skip-permissions")
+    assert cfg.agtx_agent_command_by_agent == {
+        "codex": ("codex", "--yolo"),
+        "claude": ("claude", "--dangerously-skip-permissions"),
+    }
+
+
+def test_agtx_agent_command_by_agent_absent_returns_empty(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("default_profile: balanced\n", encoding="utf-8")
+    cfg = load_config(yml)
+    assert cfg.agtx_agent_command_by_agent == {}
+
+
+def test_agtx_agent_command_by_agent_rejects_non_mapping(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n  agent_command_by_agent: [bad, list]\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="agent_command_by_agent must be a mapping"):
+        load_config(yml)
+
+
+def test_config_to_dict_round_trips_agent_command_by_agent(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "agtx:\n"
+        "  agent_command_by_agent:\n"
+        "    codex: \"codex --yolo\"\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    data = config_to_dict(cfg)
+    assert data["agtx"]["agent_command_by_agent"] == {"codex": ["codex", "--yolo"]}
+
+
 def test_agtx_plugin_from_yaml(tmp_path: Path):
     yml = tmp_path / "harbor.yml"
     yml.write_text(

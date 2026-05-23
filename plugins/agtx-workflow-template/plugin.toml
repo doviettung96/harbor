@@ -30,9 +30,9 @@ review   = "/agtx-task-verify"
 # task's current status). Keep them short — the actual instructions live
 # in the skill markdown files at skills/agtx-task-worker/SKILL.md etc.
 [prompts]
-planning = "Plan the work for task {task_id}. Read the task headers (Acceptance Criteria, Verification Probes, Runtime Target, Worker Instructions). Do not implement yet."
-running  = "Implement the work for task {task_id} per the plan. When done, run agtx-task-verify."
-review   = "Run agtx-task-verify against the task's Verification Probes. Summarize what passed and any follow-ups. Wait for me to mark Done."
+planning = "Plan the work for task {task_id}. Read the task headers (Acceptance Criteria, Verification Probes, Runtime Target, Worker Instructions). Do not implement yet — stop and wait for me to move the task to Running."
+running  = "Implement the work for task {task_id} per the plan. When done, run agtx-task-verify. If verify reports passed, call mcp__agtx__move_task(task_id=\"{task_id}\", action=\"move_forward\") yourself to advance the task to Review. If verify reports failed, fix the failure and re-run verify — never advance with failing probes."
+review   = "Run agtx-task-verify against the task's Verification Probes. Summarize what passed and any follow-ups. Do not advance the task — stop and wait for me to mark Done after I review the branch."
 
 # Patterns to detect "agent ready for input" in the pane content. When the
 # orchestrator sees one of these, it sends the prompt. (Harbor's worker also

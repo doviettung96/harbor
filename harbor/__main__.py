@@ -103,6 +103,7 @@ def cmd_webui(args: argparse.Namespace) -> int:
         copy_files=copy_files,
         inject_prompts=not args.no_inject_prompts,
         cleanup_worktree_on_done=args.cleanup_worktree_on_done,
+        pr_on_done=not args.no_pr_on_done,
         plugin=args.plugin,
     )
     msg = f"harbor webui: serving global dashboard at http://{args.host}:{args.port}/"
@@ -229,6 +230,14 @@ def build_parser() -> argparse.ArgumentParser:
             "--cleanup-worktree-on-done", action="store_true",
             help="When a task is moved to Done, `git worktree remove --force` "
             "its worktree. Off by default so users can inspect the branch.",
+        )
+        parser.add_argument(
+            "--no-pr-on-done", action="store_true",
+            help="Disable PR-on-Done. By default, when a task is moved to "
+            "Done, harbor pushes the task branch and runs `gh pr create "
+            "--base <base-branch>`; the worktree is kept so you can address "
+            "review feedback and the Done drawer shows a Cleanup button "
+            "once the PR has merged. Requires the `gh` CLI on PATH.",
         )
         parser.add_argument(
             "--map-agent", action="append", default=[], metavar="AGENT=CMD",
