@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,16 @@ from . import agtx_client
 PLUGIN_NAME = "agtx-workflow-template"
 CONFIGURE_RUNTIME_TITLE = "Configure runtime target"
 WORKER_SMOKE_TITLE = "Worker smoke test"
+
+
+AGENT_SKILL_LAYOUTS: dict[str, tuple[str, str, str, str]] = {
+    "claude": (".claude/skills", "", "dir", "SKILL.md"),
+    "gemini": (".gemini/commands", "agtx", "file", ".md"),
+    "opencode": (".opencode/command", "", "file", ".md"),
+    "codex": (".codex/skills", "", "file", ".md"),
+    "cursor": (".cursor/skills", "", "file", ".md"),
+    "copilot": (".github/agents", "agtx", "file", ".md"),
+}
 
 
 RUNTIME_TARGET_LOCAL = {
@@ -115,7 +126,15 @@ class BootstrapPlan:
         return "\n".join(lines)
 
 
-def build_plan(project: str | Path) -> BootstrapPlan:
+def build_plan(
+    project: str | Path,
+    *,
+    global_plugin: bool = False,
+    agents: Iterable[str] | None = ("claude", "codex"),
+    deploy_skills: bool = True,
+    write_harbor_yml: bool = True,
+    write_runtime_target: bool = True,
+) -> BootstrapPlan:
     """Return the file-level bootstrap plan for *project* without applying it."""
 
     project_path = Path(project).resolve()
@@ -131,7 +150,11 @@ def build_plan(project: str | Path) -> BootstrapPlan:
 
     operations: list[BootstrapOperation] = []
 
-    plugin_dest = project_path / ".agtx" / "plugins" / PLUGIN_NAME
+    plugin_dest = (
+        _global_plugin_root() / PLUGIN_NAME
+        if global_plugin
+        else project_path / ".agtx" / "plugins" / PLUGIN_NAME
+    )
     operations.append(
         _file_operation(
             "plugin manifest",
@@ -149,36 +172,32 @@ def build_plan(project: str | Path) -> BootstrapPlan:
                 content,
             )
         )
-        operations.append(
-            _file_operation(
-                f"claude skill {name}",
-                project_path / ".claude" / "skills" / name / "SKILL.md",
-                content,
+        if deploy_skills:
+            for op in _agent_skill_operations(project_path, name, content, agents):
+                operations.append(op)
+            operations.append(
+                _file_operation(
+                    f"canonical skill {name}",
+                    project_path / ".agtx" / "skills" / name / "SKILL.md",
+                    content,
+                )
             )
-        )
-        operations.append(
-            _file_operation(
-                f"codex skill {name}",
-                project_path / ".codex" / "skills" / f"{name}.md",
-                content,
-            )
-        )
-        operations.append(
-            _file_operation(
-                f"canonical skill {name}",
-                project_path / ".agtx" / "skills" / name / "SKILL.md",
-                content,
-            )
-        )
 
-    operations.append(_harbor_yml_operation(project_path / "harbor.yml"))
-    operations.append(_runtime_target_operation(project_path / ".agtx" / "runtime-target.json"))
+    if write_harbor_yml:
+        operations.append(_harbor_yml_operation(project_path / "harbor.yml"))
+    if write_runtime_target:
+        operations.append(_runtime_target_operation(project_path / ".agtx" / "runtime-target.json"))
 
     return BootstrapPlan(project=project_path, operations=tuple(operations))
 
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _global_plugin_root() -> Path:
+    home = os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".config" / "agtx" / "plugins"
 
 
 def _discover_skills(skills_dir: Path) -> tuple[tuple[str, Path], ...]:
@@ -190,6 +209,28 @@ def _discover_skills(skills_dir: Path) -> tuple[tuple[str, Path], ...]:
         if child.is_dir() and skill_md.is_file():
             skills.append((child.name, skill_md))
     return tuple(skills)
+
+
+def _agent_skill_operations(
+    project_path: Path,
+    name: str,
+    content: bytes,
+    agents: Iterable[str] | None,
+) -> tuple[BootstrapOperation, ...]:
+    operations: list[BootstrapOperation] = []
+    for agent in agents or ():
+        layout = AGENT_SKILL_LAYOUTS.get(agent)
+        if layout is None:
+            continue
+        base, namespace, kind, suffix = layout
+        native_dir = project_path / base / namespace if namespace else project_path / base
+        path = (
+            native_dir / name / suffix
+            if kind == "dir"
+            else native_dir / f"{name}{suffix}"
+        )
+        operations.append(_file_operation(f"{agent} skill {name}", path, content))
+    return tuple(operations)
 
 
 def _file_operation(label: str, path: Path, content: bytes) -> BootstrapOperation:
@@ -247,10 +288,27 @@ def _display_path(path: Path, base: Path) -> str:
         return str(path)
 
 
-def apply_bootstrap(project: str | Path) -> tuple[BootstrapPlan, tuple[BootstrapOperation, ...]]:
-    plan = build_plan(project)
+def apply_bootstrap(
+    project: str | Path,
+    *,
+    global_plugin: bool = False,
+    agents: Iterable[str] | None = ("claude", "codex"),
+    deploy_skills: bool = True,
+    write_harbor_yml: bool = True,
+    write_runtime_target: bool = True,
+    seed_tasks: bool = True,
+) -> tuple[BootstrapPlan, tuple[BootstrapOperation, ...]]:
+    plan = build_plan(
+        project,
+        global_plugin=global_plugin,
+        agents=agents,
+        deploy_skills=deploy_skills,
+        write_harbor_yml=write_harbor_yml,
+        write_runtime_target=write_runtime_target,
+    )
     applied = plan.apply()
-    seed_bootstrap_tasks(plan.project)
+    if seed_tasks:
+        seed_bootstrap_tasks(plan.project)
     return plan, applied
 
 
