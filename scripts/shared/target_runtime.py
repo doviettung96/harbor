@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     target_sub = target_parser.add_subparsers(dest="target_command", required=True)
 
     target_sub.add_parser("status", help="Show the target.kind and its subobject")
+    target_sub.add_parser("show", help="Alias for target status")
 
     set_emu = target_sub.add_parser("set-emulator", help="Set target.kind=emulator and the emulator subobject")
     set_emu.add_argument("--name", required=True)
@@ -303,7 +304,7 @@ def configure_target(args: argparse.Namespace) -> int:
     target = dict(existing.get("target") or DEFAULT_TARGET)
     sub = args.target_command
 
-    if sub == "status":
+    if sub in {"status", "show"}:
         return print_status(get_resolved_config(), as_json=False)
 
     if sub == "set-local":
