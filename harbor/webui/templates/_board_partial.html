@@ -18,9 +18,27 @@
 {% endif %}
 
 <div class="board-toolbar">
-  <form method="post" action="/projects/{{ project.project.id }}/planning-sessions" class="inline">
-    <button type="submit">New Manual Session</button>
-  </form>
+  {% if planning_agent_selector_enabled %}
+    <details class="manual-session-picker">
+      <summary>New Manual Session</summary>
+      <div class="manual-session-menu" role="dialog" aria-label="New manual session">
+        <form method="post" action="/projects/{{ project.project.id }}/planning-sessions">
+          <label for="manual-session-agent">Agent</label>
+          <select id="manual-session-agent" name="agent">
+            <option value="">Global default</option>
+            {% for opt in planning_agent_options %}
+              <option value="{{ opt }}">{{ opt }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit">Start</button>
+        </form>
+      </div>
+    </details>
+  {% else %}
+    <form method="post" action="/projects/{{ project.project.id }}/planning-sessions" class="inline">
+      <button type="submit">New Manual Session</button>
+    </form>
+  {% endif %}
 </div>
 
 {% if planning_sessions %}

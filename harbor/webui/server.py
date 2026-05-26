@@ -509,8 +509,27 @@ def create_app(
         sessions.sort(key=lambda s: s["session_name"], reverse=True)
         return sessions
 
-    def _planning_agent_argv(ctx: ProjectContext) -> tuple[str, ...]:
+    def _planning_agent_options(ctx: ProjectContext) -> list[str]:
         cfg = _transition_config_for(ctx, state.runtime.cfg, state.options)
+        return sorted(cfg.agent_command_by_agent)
+
+    def _planning_agent_context(ctx: ProjectContext) -> dict[str, Any]:
+        options = _planning_agent_options(ctx)
+        return {
+            "planning_agent_options": options,
+            "planning_agent_selector_enabled": len(options) >= 2,
+        }
+
+    def _planning_agent_argv(
+        ctx: ProjectContext,
+        agent: str | None = None,
+    ) -> tuple[str, ...]:
+        cfg = _transition_config_for(ctx, state.runtime.cfg, state.options)
+        selected = (agent or "").strip()
+        if selected:
+            mapped = cfg.agent_command_by_agent.get(selected)
+            if mapped:
+                return tuple(mapped)
         return tuple(cfg.agent_command or DEFAULT_AGENT_COMMAND)
 
     def _planning_detail_context(
@@ -562,6 +581,7 @@ def create_app(
                         open_task=None,
                         open_planning=open_planning,
                         planning_sessions=_planning_sessions(ctx),
+                        **_planning_agent_context(ctx),
                     ),
                 )
             open_task = (
@@ -580,6 +600,7 @@ def create_app(
                     open_task=open_task,
                     open_planning=open_planning,
                     planning_sessions=_planning_sessions(ctx),
+                    **_planning_agent_context(ctx),
                 ),
             )
         return templates.TemplateResponse(
@@ -684,7 +705,8 @@ def create_app(
                     planning_sessions=_planning_sessions(ctx),
                     bootstrap_preview=bootstrap_preview,
                     post_track_prompt=post_track_prompt,
-                )
+                    **_planning_agent_context(ctx),
+                ),
             )
         open_task = (
             _task_detail_context(request, ctx, task, drawer=True)
@@ -704,6 +726,7 @@ def create_app(
                 planning_sessions=_planning_sessions(ctx),
                 bootstrap_preview=bootstrap_preview,
                 post_track_prompt=post_track_prompt,
+                **_planning_agent_context(ctx),
             ),
         )
 
@@ -747,6 +770,7 @@ def create_app(
                 notifications=_notifications(ctx),
                 project=ctx,
                 planning_sessions=_planning_sessions(ctx),
+                **_planning_agent_context(ctx),
             ),
         )
 
@@ -945,10 +969,13 @@ def create_app(
     # ----- planning session actions --------------------------------------
 
     @app.post("/projects/{project_id}/planning-sessions")
-    async def action_start_planning_session(project_id: str) -> RedirectResponse:
+    async def action_start_planning_session(
+        project_id: str,
+        agent: str | None = Form(None),
+    ) -> RedirectResponse:
         ctx = state.get_project(project_id)
         session_name = _new_planning_session_name(ctx)
-        argv = _planning_agent_argv(ctx)
+        argv = _planning_agent_argv(ctx, agent)
         cmd = " ".join(shlex.quote(p) for p in argv)
         try:
             state.tmux.ensure_session(

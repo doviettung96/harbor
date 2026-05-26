@@ -675,6 +675,130 @@ def test_start_planning_session_defaults_to_claude(app_client):
     )
 
 
+def test_planning_session_agent_selector_renders_for_multiple_configured_agents(
+    tmp_path: Path,
+    memdb: AgtxDb,
+):
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path,
+            db=memdb,
+            autostart_worker=False,
+            runtime_config_path=tmp_path / "runtime.yml",
+            agent_command_by_agent={
+                "codex": ["codex", "--enable", "goals"],
+                "claude": ["claude", "--dangerously-skip-permissions"],
+            },
+        )
+        with TestClient(app) as client:
+            r = client.get("/projects/default")
+
+    assert r.status_code == 200
+    assert "New Manual Session" in r.text
+    assert 'role="dialog" aria-label="New manual session"' in r.text
+    assert '<select id="manual-session-agent" name="agent">' in r.text
+    assert '<option value="">Global default</option>' in r.text
+    assert '<option value="claude">claude</option>' in r.text
+    assert '<option value="codex">codex</option>' in r.text
+
+
+def test_planning_session_agent_selector_hidden_for_single_configured_agent(
+    tmp_path: Path,
+    memdb: AgtxDb,
+):
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path,
+            db=memdb,
+            autostart_worker=False,
+            runtime_config_path=tmp_path / "runtime.yml",
+            agent_command_by_agent={"codex": ["codex", "--enable", "goals"]},
+        )
+        with TestClient(app) as client:
+            r = client.get("/projects/default")
+
+    assert r.status_code == 200
+    assert "New Manual Session" in r.text
+    assert '<select id="manual-session-agent" name="agent">' not in r.text
+    assert 'method="post" action="/projects/default/planning-sessions" class="inline"' in r.text
+
+
+def test_start_planning_session_uses_selected_configured_agent_command(
+    tmp_path: Path,
+    memdb: AgtxDb,
+):
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path,
+            db=memdb,
+            autostart_worker=False,
+            runtime_config_path=tmp_path / "runtime.yml",
+            agent_command=["claude", "--dangerously-skip-permissions"],
+            agent_command_by_agent={
+                "codex": ["codex", "--enable", "goals", "-m", "gpt-5.5"],
+                "claude": ["claude", "--dangerously-skip-permissions"],
+            },
+        )
+        with TestClient(app) as client:
+            r = client.post(
+                "/projects/default/planning-sessions",
+                data={"agent": "codex"},
+                follow_redirects=False,
+            )
+
+    assert r.status_code == 303
+    session_name = r.headers["location"].split("planning=", 1)[1]
+    fake_tmux.send_keys.assert_called_with(
+        session_name,
+        "",
+        "codex --enable goals -m gpt-5.5",
+    )
+
+
+def test_start_planning_session_falls_back_for_empty_unknown_or_unmapped_agent(
+    tmp_path: Path,
+    memdb: AgtxDb,
+):
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path,
+            db=memdb,
+            autostart_worker=False,
+            runtime_config_path=tmp_path / "runtime.yml",
+            agent_command=["claude", "--dangerously-skip-permissions"],
+            agent_command_by_agent={"codex": ["codex", "--enable", "goals"]},
+        )
+        with TestClient(app) as client:
+            empty = client.post(
+                "/projects/default/planning-sessions",
+                data={"agent": ""},
+                follow_redirects=False,
+            )
+            unknown = client.post(
+                "/projects/default/planning-sessions",
+                data={"agent": "gemini"},
+                follow_redirects=False,
+            )
+
+    assert empty.status_code == 303
+    assert unknown.status_code == 303
+    sent_commands = [call.args[2] for call in fake_tmux.send_keys.call_args_list]
+    assert sent_commands == [
+        "claude --dangerously-skip-permissions",
+        "claude --dangerously-skip-permissions",
+    ]
+
+
 def test_kill_planning_session_invokes_tmux_kill(app_client):
     client, _, fake_tmux = app_client
     session_name = "plan-default-20260516010203-123456789"
