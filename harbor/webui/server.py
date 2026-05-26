@@ -35,6 +35,7 @@ from ..agent import (
     write_config,
     write_runtime_config,
 )
+from ..bootstrap import BootstrapPlan, apply_bootstrap, build_plan
 from ..agtx_client import (
     AgtxDb,
     Project,
@@ -105,6 +106,10 @@ class ProjectContext:
     config_path: Path
     config_status: str
     config_error: str = ""
+    bootstrap_status: str = "unknown"
+    bootstrap_pending_count: int = 0
+    bootstrap_plan: BootstrapPlan | None = None
+    bootstrap_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -185,6 +190,9 @@ class GlobalWebuiState:
             db_initialized = False
         config_path = project_path / "harbor.yml"
         config_status, config_error = _project_config_status(config_path)
+        bootstrap_status, bootstrap_pending_count, bootstrap_plan, bootstrap_error = (
+            _project_bootstrap_status(project_path)
+        )
         return ProjectContext(
             project=project,
             path=project_path,
@@ -194,6 +202,10 @@ class GlobalWebuiState:
             config_path=config_path,
             config_status=config_status,
             config_error=config_error,
+            bootstrap_status=bootstrap_status,
+            bootstrap_pending_count=bootstrap_pending_count,
+            bootstrap_plan=bootstrap_plan,
+            bootstrap_error=bootstrap_error,
         )
 
 
@@ -601,7 +613,7 @@ def create_app(
         project_name: str = Form(""),
     ) -> RedirectResponse:
         project = _register_project_from_path(project_path, project_name)
-        return RedirectResponse(f"/projects/{project.id}", status_code=303)
+        return RedirectResponse(f"/projects/{project.id}?tracked=1", status_code=303)
 
     @app.get("/projects/init/browse", response_class=HTMLResponse)
     async def project_folder_browser(
@@ -620,7 +632,7 @@ def create_app(
         project_name: str = Form(""),
     ) -> RedirectResponse:
         project = _register_project_from_path(project_path, project_name)
-        return RedirectResponse(f"/projects/{project.id}", status_code=303)
+        return RedirectResponse(f"/projects/{project.id}?tracked=1", status_code=303)
 
     async def _pick_and_register_project() -> RedirectResponse:
         try:
@@ -631,7 +643,7 @@ def create_app(
             return RedirectResponse("/", status_code=303)
 
         project = _register_project_from_path(picked)
-        return RedirectResponse(f"/projects/{project.id}", status_code=303)
+        return RedirectResponse(f"/projects/{project.id}?tracked=1", status_code=303)
 
     @app.get("/projects/init/pick-folder")
     async def action_project_init_pick_folder_get() -> RedirectResponse:
@@ -647,8 +659,12 @@ def create_app(
         project_id: str,
         task: str | None = None,
         planning: str | None = None,
+        bootstrap: str | None = None,
+        tracked: str | None = None,
     ) -> HTMLResponse:
         ctx = state.get_project(project_id)
+        bootstrap_preview = bootstrap == "preview"
+        post_track_prompt = bool(tracked) and ctx.bootstrap_status != "bootstrapped"
         open_planning = (
             _planning_detail_context(request, ctx, planning, drawer=True)
             if planning and not task else None
@@ -666,7 +682,9 @@ def create_app(
                     open_task=None,
                     open_planning=open_planning,
                     planning_sessions=_planning_sessions(ctx),
-                ),
+                    bootstrap_preview=bootstrap_preview,
+                    post_track_prompt=post_track_prompt,
+                )
             )
         open_task = (
             _task_detail_context(request, ctx, task, drawer=True)
@@ -684,6 +702,8 @@ def create_app(
                 open_task=open_task,
                 open_planning=open_planning,
                 planning_sessions=_planning_sessions(ctx),
+                bootstrap_preview=bootstrap_preview,
+                post_track_prompt=post_track_prompt,
             ),
         )
 
@@ -975,6 +995,15 @@ def create_app(
         write_config(ctx.config_path, state.runtime.cfg, backup=True)
         return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
+    @app.post("/projects/{project_id}/bootstrap")
+    async def action_project_bootstrap(project_id: str) -> RedirectResponse:
+        ctx = state.get_project(project_id)
+        try:
+            apply_bootstrap(ctx.path)
+        except Exception as exc:
+            raise HTTPException(500, f"bootstrap failed: {exc}") from exc
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
     @app.post("/settings/runtime")
     async def action_settings_runtime(
         agent_command: str | None = Form(None),
@@ -1248,6 +1277,23 @@ def _project_config_status(path: Path) -> tuple[str, str]:
     except Exception as exc:
         return "invalid", str(exc)
     return "valid", ""
+
+
+def _project_bootstrap_status(
+    project_path: Path,
+) -> tuple[str, int, BootstrapPlan | None, str]:
+    try:
+        plan = build_plan(project_path)
+    except Exception as exc:
+        return "error", 0, None, str(exc)
+    pending = plan.pending_operations
+    if not pending:
+        status = "bootstrapped"
+    elif any(op.status == "update" for op in pending):
+        status = "stale"
+    else:
+        status = "not bootstrapped"
+    return status, len(pending), plan, ""
 
 
 def _select_initial_project(
