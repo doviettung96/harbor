@@ -155,6 +155,7 @@ def resolve_project_db_path(project_path: str | Path) -> tuple[Path, str | None]
     candidate_set = {c for c in candidates}
     # Always include the raw input string as a possible match.
     candidate_set.add(input_str)
+    candidate_folded = {c.casefold() for c in candidate_set}
 
     gdb = global_db_path()
     if gdb.exists():
@@ -167,7 +168,9 @@ def resolve_project_db_path(project_path: str | Path) -> tuple[Path, str | None]
                 conn.close()
             for row in rows:
                 stored = row["path"]
-                if stored in candidate_set:
+                if stored in candidate_set or (
+                    sys.platform == "win32" and stored.casefold() in candidate_folded
+                ):
                     return agtx_config_dir() / "projects" / f"{hash_project_path(stored)}.db", stored
         except sqlite3.Error:
             pass
@@ -448,6 +451,95 @@ class AgtxDb:
         task = _task_from_row(row)
         self._resolve_task_dependencies(conn, [task])
         return task
+
+    def find_task_by_title(
+        self,
+        title: str,
+        *,
+        project_id: str | None = None,
+    ) -> Task | None:
+        sql = "SELECT * FROM tasks WHERE title = ?"
+        params: list[Any] = [title]
+        if project_id is not None:
+            sql += " AND project_id = ?"
+            params.append(project_id)
+        sql += " ORDER BY created_at LIMIT 1"
+        conn = self._connect_project()
+        row = conn.execute(sql, params).fetchone()
+        if row is None:
+            return None
+        task = _task_from_row(row)
+        self._resolve_task_dependencies(conn, [task])
+        return task
+
+    def create_task(
+        self,
+        *,
+        title: str,
+        description: str,
+        project_id: str,
+        agent: str = "codex",
+        status: str = "backlog",
+        plugin: str | None = None,
+        referenced_tasks: str | None = None,
+        base_branch: str | None = None,
+    ) -> Task:
+        if status not in VALID_STATUSES:
+            raise ValueError(f"invalid status: {status!r}")
+        task_id = str(uuid.uuid4())
+        now = _now_rfc3339()
+        conn = self._connect_project()
+        conn.execute(
+            "INSERT INTO tasks (id, title, description, status, agent, project_id, "
+            "session_name, worktree_path, branch_name, pr_number, pr_url, plugin, "
+            "cycle, referenced_tasks, escalation_note, base_branch, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, ?, "
+            "1, ?, NULL, ?, ?, ?)",
+            (
+                task_id,
+                title,
+                description,
+                status,
+                agent,
+                project_id,
+                plugin,
+                referenced_tasks,
+                base_branch,
+                now,
+                now,
+            ),
+        )
+        task = self.get_task(task_id)
+        if task is None:
+            raise RuntimeError(f"failed to create task {task_id}")
+        return task
+
+    def create_task_if_title_missing(
+        self,
+        *,
+        title: str,
+        description: str,
+        project_id: str,
+        agent: str = "codex",
+        status: str = "backlog",
+        plugin: str | None = None,
+        referenced_tasks: str | None = None,
+        base_branch: str | None = None,
+    ) -> tuple[Task, bool]:
+        existing = self.find_task_by_title(title, project_id=project_id)
+        if existing is not None:
+            return existing, False
+        created = self.create_task(
+            title=title,
+            description=description,
+            project_id=project_id,
+            agent=agent,
+            status=status,
+            plugin=plugin,
+            referenced_tasks=referenced_tasks,
+            base_branch=base_branch,
+        )
+        return created, True
 
     @staticmethod
     def _resolve_task_dependencies(conn: sqlite3.Connection, tasks: list[Task]) -> None:

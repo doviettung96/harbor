@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import sys
 import time
 from datetime import datetime, timezone
 
@@ -97,6 +98,32 @@ def test_resolve_via_global_index_uses_canonical_path(tmp_path, monkeypatch):
     assert found_canonical == canonical
     expected_hash = ac.hash_project_path(canonical)
     assert db_path.name == f"{expected_hash}.db"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path casing behavior")
+def test_resolve_via_global_index_matches_windows_paths_case_insensitively(tmp_path, monkeypatch):
+    from harbor import agtx_client as ac
+
+    fake_config = tmp_path / "agtx-config"
+    (fake_config / "projects").mkdir(parents=True)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+
+    stored = "\\\\?\\C:\\Users\\Admin\\Repo"
+    user_input = "c:\\users\\admin\\repo"
+
+    gdb = fake_config / "index.db"
+    conn = sqlite3.connect(str(gdb))
+    ac.init_test_db(conn, kind="global")
+    conn.execute(
+        "INSERT INTO projects (id, name, path, last_opened) VALUES (?, ?, ?, ?)",
+        ("p1", "repo", stored, "2026-01-01T00:00:00+00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    db_path, found_canonical = ac.resolve_project_db_path(user_input)
+    assert found_canonical == stored
+    assert db_path.name == f"{ac.hash_project_path(stored)}.db"
 
 
 def test_resolve_falls_back_to_literal_when_not_in_index(tmp_path, monkeypatch):

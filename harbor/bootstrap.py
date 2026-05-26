@@ -11,8 +11,12 @@ from typing import Iterable
 
 import yaml
 
+from . import agtx_client
+
 
 PLUGIN_NAME = "agtx-workflow-template"
+CONFIGURE_RUNTIME_TITLE = "Configure runtime target"
+WORKER_SMOKE_TITLE = "Worker smoke test"
 
 
 RUNTIME_TARGET_LOCAL = {
@@ -22,6 +26,53 @@ RUNTIME_TARGET_LOCAL = {
         "kind": "local",
     },
 }
+
+
+CONFIGURE_RUNTIME_DESCRIPTION = """Point `.agtx/runtime-target.json` at the real runtime this repo should use: local, ssh, emulator, device, or game_window. Use `python scripts/shared/target_runtime.py target set-*` commands so the schema is validated.
+
+## Acceptance Criteria
+- `.agtx/runtime-target.json` reflects the target runtime the user chose.
+- `python scripts/shared/target_runtime.py target show` exits 0.
+- If the target is not local, the configured probe command proves the target is reachable.
+
+## Verification Probes
+- python scripts/shared/target_runtime.py target show
+
+## Runtime Target
+local
+
+## Worker Instructions
+Ask the user which runtime target to configure before changing `.agtx/runtime-target.json`; do not guess emulator, device, SSH, or game-window details.
+
+## Run Repo Defaults
+no
+"""
+
+
+WORKER_SMOKE_DESCRIPTION = """Prove a task worker can edit its own worktree and satisfy an explicit file probe.
+
+## Acceptance Criteria
+- Create `SMOKE_WORKER.md` in the task worktree.
+- The file contains exactly `harbor worker smoke ok`.
+- The verification probe exits 0 through `target-runtime-exec`.
+
+## Verification Probes
+- python -c "from pathlib import Path; p=Path('SMOKE_WORKER.md'); raise SystemExit(0 if p.is_file() and p.read_text(encoding='utf-8').strip() == 'harbor worker smoke ok' else 1)"
+
+## Runtime Target
+local
+
+## Worker Instructions
+Only edit `SMOKE_WORKER.md` for this smoke task.
+
+## Run Repo Defaults
+no
+"""
+
+BOOTSTRAP_TASKS = (
+    (CONFIGURE_RUNTIME_TITLE, CONFIGURE_RUNTIME_DESCRIPTION),
+    (WORKER_SMOKE_TITLE, WORKER_SMOKE_DESCRIPTION),
+)
 
 
 @dataclass(frozen=True)
@@ -198,7 +249,36 @@ def _display_path(path: Path, base: Path) -> str:
 
 def apply_bootstrap(project: str | Path) -> tuple[BootstrapPlan, tuple[BootstrapOperation, ...]]:
     plan = build_plan(project)
-    return plan, plan.apply()
+    applied = plan.apply()
+    seed_bootstrap_tasks(plan.project)
+    return plan, applied
+
+
+def seed_bootstrap_tasks(project: str | Path) -> tuple[tuple[agtx_client.Task, bool], ...]:
+    """Register *project* with agtx and ensure Harbor's starter tasks exist."""
+
+    project_record = agtx_client.AgtxDb(
+        project_db_p=None,  # type: ignore[arg-type]
+        global_db_p=agtx_client.global_db_path(),
+    ).register_project(project)
+    project_db = (
+        agtx_client.agtx_config_dir()
+        / "projects"
+        / f"{agtx_client.hash_project_path(project_record.path)}.db"
+    )
+    db = agtx_client.AgtxDb(project_db_p=project_db, global_db_p=agtx_client.global_db_path())
+    seeded: list[tuple[agtx_client.Task, bool]] = []
+    for title, description in BOOTSTRAP_TASKS:
+        seeded.append(
+            db.create_task_if_title_missing(
+                title=title,
+                description=description,
+                project_id=project_record.id,
+                agent="codex",
+                status="backlog",
+            )
+        )
+    return tuple(seeded)
 
 
 def _build_parser() -> argparse.ArgumentParser:
