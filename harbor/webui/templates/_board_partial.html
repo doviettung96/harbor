@@ -85,11 +85,11 @@
               {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
               {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
             </span>
-            {% if task.dependencies %}
+            {% if task.blocking_dependencies %}
               <span class="deps">
                 <strong>Blocked by:</strong>
-                {% for dep in task.dependencies %}
-                  <span><code>{{ dep.short_id }}</code> &mdash; {{ dep.title }} [{{ dep.status }}]</span>{% if not loop.last %}; {% endif %}
+                {% for dep in task.blocking_dependencies %}
+                  <code>{{ dep.short_id }}</code>{% if not loop.last %}, {% endif %}
                 {% endfor %}
               </span>
             {% endif %}
