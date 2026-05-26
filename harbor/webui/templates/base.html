@@ -62,6 +62,7 @@
     .project-name { font-weight: 600; overflow-wrap: anywhere; }
     .project-path { margin-top: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     .project-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+    .status-row { margin-top: 6px; display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     header {
       padding: 14px 24px;
       border-bottom: 1px solid var(--border);
@@ -194,13 +195,19 @@
                 </span>
               </div>
               <div class="project-path"><code>{{ p.project.path }}</code></div>
-              <div style="margin-top: 6px;">
+              <div class="status-row">
                 <span class="pill {% if p.config_status == 'valid' %}ok{% elif p.config_status == 'invalid' %}err{% else %}warn{% endif %}">
                   config {{ p.config_status }}
+                </span>
+                <span class="pill {% if p.bootstrap_status == 'bootstrapped' %}ok{% elif p.bootstrap_status == 'error' %}err{% else %}warn{% endif %}">
+                  {{ p.bootstrap_status }}
                 </span>
               </div>
               {% if p.config_error %}
                 <div class="project-path" style="color: var(--err);">{{ p.config_error }}</div>
+              {% endif %}
+              {% if p.bootstrap_error %}
+                <div class="project-path" style="color: var(--err);">{{ p.bootstrap_error }}</div>
               {% endif %}
               <div class="project-actions">
                 <form method="post" action="/projects/{{ p.project.id }}/config/load" class="inline">
@@ -208,6 +215,10 @@
                 </form>
                 <form method="post" action="/projects/{{ p.project.id }}/config/save" class="inline">
                   <button type="submit">Save live config here</button>
+                </form>
+                <form method="get" action="/projects/{{ p.project.id }}" class="inline">
+                  <input type="hidden" name="bootstrap" value="preview">
+                  <button type="submit" {% if p.bootstrap_status == 'error' %}disabled{% endif %}>Set up workflow</button>
                 </form>
               </div>
             </div>

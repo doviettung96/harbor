@@ -6,6 +6,50 @@
 {% endblock %}
 {% block content %}
 
+<div class="panel bootstrap-panel">
+  <h2>Workflow setup</h2>
+  <div class="panel-body">
+    {% if post_track_prompt %}
+      <div class="setup-callout">
+        <strong>Set this project up now?</strong>
+        <span class="muted">Harbor can install the agtx workflow plugin, skills, harbor.yml, and runtime target files for this project.</span>
+      </div>
+    {% endif %}
+
+    <div class="bootstrap-summary">
+      <span class="pill {% if project.bootstrap_status == 'bootstrapped' %}ok{% elif project.bootstrap_status == 'error' %}err{% else %}warn{% endif %}">
+        {{ project.bootstrap_status }}
+      </span>
+      {% if project.bootstrap_status in ['not bootstrapped', 'stale'] %}
+        <span class="muted">{{ project.bootstrap_pending_count }} pending file operation{% if project.bootstrap_pending_count != 1 %}s{% endif %}</span>
+      {% elif project.bootstrap_status == 'bootstrapped' %}
+        <span class="muted">Workflow files match Harbor's current built-ins.</span>
+      {% endif %}
+      {% if project.bootstrap_error %}
+        <span class="muted" style="color: var(--err);">{{ project.bootstrap_error }}</span>
+      {% endif %}
+      <form method="get" action="/projects/{{ project.project.id }}" class="inline">
+        <input type="hidden" name="bootstrap" value="preview">
+        <button type="submit" {% if project.bootstrap_status == 'error' %}disabled{% endif %}>Set up workflow</button>
+      </form>
+    </div>
+
+    {% if bootstrap_preview %}
+      <div class="bootstrap-preview">
+        <h3>Bootstrap plan</h3>
+        {% if project.bootstrap_plan %}
+          <pre class="pane-capture">{{ project.bootstrap_plan.render() }}</pre>
+          <form method="post" action="/projects/{{ project.project.id }}/bootstrap" class="inline">
+            <button type="submit" {% if not project.bootstrap_plan.pending_operations %}disabled{% endif %}>Apply setup</button>
+          </form>
+        {% else %}
+          <div class="muted">No bootstrap plan is available.</div>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+</div>
+
 {% if db_uninitialized %}
   <div class="panel">
     <h2>Project DB not initialized</h2>
@@ -204,6 +248,30 @@
     line-height: 1.35;
   }
   .empty-col { color: var(--muted); font-style: italic; padding: 16px; text-align: center; font-size: 12px; }
+  .bootstrap-summary {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .setup-callout {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    align-items: baseline;
+    margin-bottom: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--code);
+  }
+  .bootstrap-preview {
+    margin-top: 12px;
+  }
+  .bootstrap-preview h3 {
+    margin: 0 0 8px;
+    font-size: 13px;
+  }
   .terminal-shell {
     border: 1px solid var(--border);
     border-radius: 6px;
