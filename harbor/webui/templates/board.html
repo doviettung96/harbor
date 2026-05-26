@@ -144,6 +144,44 @@
     gap: 8px;
     margin-bottom: 12px;
   }
+  .manual-session-picker {
+    position: relative;
+  }
+  .manual-session-picker summary {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 5px 10px;
+    background: var(--panel);
+    color: var(--fg);
+    cursor: pointer;
+    user-select: none;
+  }
+  .manual-session-picker summary:hover {
+    border-color: var(--accent);
+  }
+  .manual-session-menu {
+    position: absolute;
+    right: 0;
+    z-index: 20;
+    min-width: 240px;
+    margin-top: 6px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--panel);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .28);
+  }
+  .manual-session-menu form {
+    display: grid;
+    gap: 8px;
+  }
+  .manual-session-menu label {
+    font-size: 12px;
+    color: var(--muted);
+  }
   .planning-strip {
     border: 1px solid var(--border);
     background: var(--panel);
