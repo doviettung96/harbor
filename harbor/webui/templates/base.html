@@ -185,6 +185,12 @@
       </div>
       <div class="project-tree">
         <h2>Projects</h2>
+        <div class="project-item {% if request.url.path == '/all' %}selected{% endif %}">
+          <div class="project-title">
+            <a class="project-name" href="/all">All tasks</a>
+          </div>
+          <div class="project-path">Cross-project board</div>
+        </div>
         {% if projects %}
           {% for p in projects %}
             <div class="project-item {% if selected_project_id == p.project.id %}selected{% endif %}">

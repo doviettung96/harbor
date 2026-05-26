@@ -1,32 +1,31 @@
-# Plan: cbdb2404 harbor/bootstrap.py file-level bootstrap core
+# Plan: 0b7d5ded /all cross-project web UI board
 
 ## Task Contract Parsed
 
 Status: planning
 
-Title: harbor/bootstrap.py - file-level bootstrap core
+Title: Webui: flat cross-project task view at /all with phase columns, project sub-groups, and signal vocabulary
 
 Acceptance Criteria:
-- Applying bootstrap to a blank temp project creates:
-  - `.agtx/plugins/agtx-workflow-template/plugin.toml`
-  - `.agtx/plugins/agtx-workflow-template/skills/<name>/SKILL.md` for every repo skill under `harbor/.claude/skills/`
-  - `.claude/skills/<name>/SKILL.md` for every skill
-  - `.codex/skills/<name>.md` for every skill
-  - `.agtx/skills/<name>/SKILL.md` for every skill
-  - `harbor.yml` containing `agtx.plugin: agtx-workflow-template`
-  - `.agtx/runtime-target.json` with `target.kind: local`
-- Re-applying bootstrap is a no-op.
-- `python -m harbor.bootstrap --plan <project>` prints operations without applying.
-- Existing `harbor.yml` keys are preserved while `agtx.plugin` is added or updated.
-- Existing `.agtx/runtime-target.json` is preserved and never overwritten.
+- `GET /all` returns HTTP 200 and renders a 5-column kanban: Backlog, Planning, Running, Review, Done.
+- Inside each column, tasks are grouped by project under a project header showing project name + count and a coloured left-bar; project order is stable across columns.
+- In Backlog/Planning/Running/Review, every registered project's slot is rendered even when empty with placeholder `-`; Done hides empty project slots.
+- Cards in Planning/Running/Review each render exactly one signal glyph on the card head:
+  - blue pulse when the task's tmux session is alive
+  - amber bang `!` when the session ended or a sentinel was hit
+  - red bang `!` when `task.escalation_note` is set
+- Cards in Backlog and Done render no signal glyph.
+- A sidebar link `All tasks` navigates to `/all`.
+- Clicking a card on `/all` opens the existing task drawer via `?task=<id>` with task fields from that task's owning project DB.
+- The board refreshes via htmx every 4 seconds, same cadence as the per-project board.
 
 Verification Probes:
-- `python -m pytest tests/test_bootstrap.py -q -v -s`
-- `python -m harbor.bootstrap --plan tests/fixtures/blank-project`
+- `python -m pytest tests/test_webui_all.py -q -v -s`
+- `python -m pytest tests/test_webui_agtx.py -q -v -s`
 
 Runtime Target:
 - `local`
-- Repo default `.agtx/runtime-target.json` is already local, so no worktree runtime override is needed.
+- Repo default `.agtx/runtime-target.json` is local, so no worktree runtime override is needed.
 
 Worker Instructions:
 - none
@@ -36,65 +35,66 @@ Run Repo Defaults:
 
 ## Context Found
 
-- The repo has no `harbor/bootstrap.py` or `tests/test_bootstrap.py` yet.
-- `plugins/agtx-workflow-template/install.py` has related copy/deploy logic, but it deploys Claude skills to `.claude/commands/agtx/<name>.md`; this task explicitly requires skill-dir layout at `.claude/skills/<name>/SKILL.md`.
-- `harbor/agent.py` already imports PyYAML and owns config serialization helpers, but bootstrap needs a lighter non-destructive merge that preserves unrelated `harbor.yml` keys.
-- `plugins/agtx-workflow-template/` currently contains `plugin.toml`, `README.md`, and `install.py`; the bootstrap destination only needs a self-contained plugin directory with `plugin.toml` and materialized `skills/`.
+- The current `/` and `/projects/{project_id}` board flows render a single selected project through `board.html` plus `_board_partial.html`.
+- `GlobalWebuiState.refresh_projects()` already returns all registered project contexts in a stable order from the project provider or agtx global index.
+- `AgtxDb.list_tasks()` resolves dependencies and returns per-project tasks; no schema change is needed for aggregation.
+- Existing task drawer routes are project-scoped at `/projects/{project_id}/_partials/task/{task_id}` and compatibility routes default to the selected project.
+- Existing cards use `data-task-id`, `data-partial-url`, and JS in `board.html` to fetch a drawer partial and update `?task=<id>`.
+- Existing tmux state helpers in `server.py` can determine whether a session is live and can capture pane text for non-live sessions.
+- Signal state needs a small derived view model because the task card must distinguish live sessions, dead sessions, sentinel-hit panes, escalation, and non-signal statuses.
 
 ## Implementation Plan
 
-1. Add `harbor/bootstrap.py`.
-   - Define small structured operation records, likely with fields such as action, source, destination, reason, and whether the operation is pending.
-   - Resolve the Harbor repo root from `Path(__file__).resolve().parent.parent`.
-   - Resolve canonical sources:
-     - plugin source: `<repo>/plugins/agtx-workflow-template`
-     - skills source: `<repo>/.claude/skills`
-   - Enumerate skills by directories containing `SKILL.md`, sorted for deterministic output.
+1. Add a cross-project board view model in `harbor/webui/server.py`.
+   - Keep it read-only and derive everything from existing project contexts and task DB rows.
+   - Build columns in the existing `COLUMNS` order.
+   - For each column, include project groups in `state.refresh_projects()` order.
+   - For Backlog/Planning/Running/Review, include every registered and initialized project even when that project has no tasks in the column.
+   - For Done, omit project groups that have zero Done tasks.
+   - Decide how to handle uninitialized project DBs consistently: show empty placeholder groups for active columns if the project is registered but has no readable task rows; do not fail `/all` because one project DB is missing.
 
-2. Implement plan computation without side effects.
-   - Plugin install operations:
-     - Copy `plugin.toml` to `<project>/.agtx/plugins/agtx-workflow-template/plugin.toml`.
-     - Copy each skill `SKILL.md` to `<project>/.agtx/plugins/agtx-workflow-template/skills/<name>/SKILL.md`.
-   - Agent-native skill operations:
-     - Copy each skill to `<project>/.claude/skills/<name>/SKILL.md`.
-     - Copy each skill to `<project>/.codex/skills/<name>.md`.
-     - Copy each skill to `<project>/.agtx/skills/<name>/SKILL.md`.
-   - Config operations:
-     - Plan a `harbor.yml` YAML merge so `agtx.plugin` becomes `agtx-workflow-template`, preserving unrelated keys.
-     - Plan `.agtx/runtime-target.json` creation only when absent.
-   - Treat a destination with identical content as no-op so a second apply reports zero pending file changes.
+2. Add signal derivation for cross-project cards.
+   - Only compute signals for Planning/Running/Review cards.
+   - Red wins when `task.escalation_note` is set.
+   - Blue wins when `task.session_name` exists and `state.tmux.has_session(...)` returns true.
+   - Amber applies when a task has a `session_name` but the tmux session is not live.
+   - Amber also applies when captured pane text indicates a completion/blocker sentinel. I will verify the current expected marker before coding; likely candidates are `agtx-verify ... passed/failed/escalated` for agtx tasks, with optional compatibility for `HARBOR-DONE: <task-id> ...` via `harbor.prompt.parse_sentinel`.
+   - Backlog and Done cards get no signal even if old session/escalation fields exist.
 
-3. Implement apply behavior.
-   - Create parent directories as needed.
-   - Copy only when content differs or destination is absent.
-   - Write YAML through `yaml.safe_load` / `yaml.safe_dump(sort_keys=False, allow_unicode=False)` while preserving existing top-level keys semantically.
-   - Write the local runtime target JSON only if absent, with version/mode local and `target.kind: local`.
-   - Never overwrite existing `.agtx/runtime-target.json`.
+3. Add `/all` and `/all/_partials/board` routes.
+   - `GET /all` renders a new template with the cross-project board and optional drawer.
+   - The board section uses `hx-get="/all/_partials/board"` and `hx-trigger="every 4s"`.
+   - If `?task=<id>` is present, resolve the owning project by searching initialized project DBs for that task ID, then reuse `_task_detail_context(...)`.
+   - If the same task ID appears in more than one project, pick the first project in stable project order.
+   - Return 404 if no owning project contains the task.
 
-4. Implement CLI for `python -m harbor.bootstrap`.
-   - Support `--plan <project>`: compute and print deterministic operations without applying; exit zero.
-   - Support `--apply <project>`: compute, apply pending operations, print applied/skipped summary; exit zero.
-   - Validate exactly one of `--plan` or `--apply`.
+4. Add templates for the flat board.
+   - Create `all.html` and `_all_board_partial.html`, reusing the visual language from `board.html` without introducing write controls.
+   - Render five columns with project subgroups, project header count, stable color left-bar, and placeholder `-` for empty active-column groups.
+   - Render cards with links like `/all?task=<id>` and `data-partial-url="/projects/<project_id>/_partials/task/<task_id>"` so the existing drawer endpoint returns the correct project task.
+   - Add minimal CSS for project groups, project color bars, signal glyphs, and pulse animation inside the `/all` template.
 
-5. Add `tests/test_bootstrap.py`.
-   - Use `tmp_path` for blank projects.
-   - Assert all required plugin, Claude, Codex, and canonical skill files exist after apply.
-   - Compare against the current skill list under repo `.claude/skills` so the test tracks all skills.
-   - Snapshot file contents after first apply and assert second apply leaves the tree unchanged and reports no pending operations.
-   - Assert plan mode prints operations but leaves a blank project untouched.
-   - Assert `harbor.yml` merge preserves unrelated keys and sets `agtx.plugin`.
-   - Assert existing `.agtx/runtime-target.json` content remains byte-for-byte unchanged.
+5. Update sidebar navigation in `base.html`.
+   - Add an `All tasks` link near the project list.
+   - Keep existing project links unchanged.
 
-## Verification Plan For Running Phase
+6. Add `tests/test_webui_all.py`.
+   - Build an app with multiple in-memory project DBs and fake tmux, using existing `Project`, `AgtxDb`, `init_test_db`, and `insert_test_task` helpers.
+   - Cover HTTP 200, five column labels, project grouping, stable project order, active-column placeholders, Done hiding empty project slots, sidebar link, htmx 4-second refresh, and card drawer URLs.
+   - Cover signal precedence and absence:
+     - live Planning/Running/Review task gets blue pulse
+     - dead session or sentinel-hit task gets amber bang
+     - escalation gets red bang
+     - Backlog/Done cards get no signal
+   - Cover `/all?task=<id>` preloads the drawer from the owning project DB.
 
-After implementation, invoke `agtx-task-verify`, which must run the task probes through `target-runtime-exec`:
-- `python -m pytest tests/test_bootstrap.py -q -v -s`
-- `python -m harbor.bootstrap --plan tests/fixtures/blank-project`
-
-Because `## Run Repo Defaults` is `yes`, the verification step should also run the repo default build/test path after probes pass.
+7. Run verification in the Running phase through `agtx-task-verify`.
+   - `python -m pytest tests/test_webui_all.py -q -v -s`
+   - `python -m pytest tests/test_webui_agtx.py -q -v -s`
+   - Because `Run Repo Defaults` is `yes`, let `agtx-task-verify` run the repo default build/test path after these probes pass.
 
 ## Notes / Risks
 
-- The task's Claude destination conflicts with older installer comments and helper mappings. The bootstrap implementation should follow the task's explicit `.claude/skills/<name>/SKILL.md` acceptance criterion.
-- The second verification probe references `tests/fixtures/blank-project`; if it does not exist yet, the implementation or tests should add that fixture directory without depending on generated state.
-- "YAML round-trip, never clobber" is interpreted as preserving existing data keys and only changing `agtx.plugin`, not preserving comments or formatting byte-for-byte.
+- The amber "sentinel hit" definition is the one ambiguous implementation detail. I will ground it in existing harbor/agtx output parsing before editing, and tests will pin the chosen marker vocabulary.
+- The existing `/all` task query only carries `task=<id>`, not project ID, so route-side owner resolution is required. The card partial URL can still be project-scoped for click-time drawer fetches.
+- This task is UI aggregation only. I will not add write routes, DB columns, or change per-project board behavior except where shared template helpers make that unavoidable.

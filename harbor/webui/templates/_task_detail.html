@@ -43,7 +43,7 @@
             class="terminal-shell"
             data-terminal-root
             data-live="1"
-            data-ws-url="/ws/tmux/{{ task.id }}"
+            data-ws-url="{{ task_ws_url|default('/ws/tmux/' ~ task.id) }}"
           >
             <div class="terminal-status muted" data-terminal-status>connecting...</div>
             <div class="xterm-host" data-terminal-host></div>

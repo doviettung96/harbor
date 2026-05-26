@@ -1,0 +1,62 @@
+<div class="kanban all-kanban" aria-label="All project task board">
+  {% for col in columns %}
+    <section class="col all-col" aria-labelledby="all-col-{{ col.key }}" data-column="{{ col.key }}">
+      <h2 id="all-col-{{ col.key }}">
+        <span>{{ col.title }}</span>
+        <span class="count">{{ col.count }}</span>
+      </h2>
+      <div class="col-body all-col-body">
+        {% for group in col.groups %}
+          <section
+            class="all-project-group"
+            data-project-id="{{ group.project.project.id }}"
+            style="--project-color: {{ group.color }};"
+          >
+            <header class="all-project-head">
+              <span class="all-project-name">{{ group.project.project.name }}</span>
+              <span class="count">{{ group.count }}</span>
+            </header>
+            <div class="all-project-tasks">
+              {% for row in group.tasks %}
+                {% set task = row.task %}
+                <a
+                  class="card task-card all-task-card"
+                  href="/all?task={{ task.id }}"
+                  data-task-id="{{ task.id }}"
+                  data-partial-url="/projects/{{ row.project.project.id }}/_partials/task/{{ task.id }}"
+                >
+                  <span class="all-card-head">
+                    <span class="title">{{ task.title }}</span>
+                    {% if row.signal %}
+                      <span
+                        class="signal signal-{{ row.signal.kind }}"
+                        data-signal="{{ row.signal.kind }}"
+                        title="{{ row.signal.title }}"
+                      >{{ row.signal.label }}</span>
+                    {% endif %}
+                  </span>
+                  <span class="meta">
+                    <code>{{ task.short_id }}</code>
+                    <span class="agent">{{ task.agent }}</span>
+                  </span>
+                  {% if task.blocking_dependencies %}
+                    <span class="deps">
+                      <strong>Blocked by:</strong>
+                      {% for dep in task.blocking_dependencies %}
+                        <code>{{ dep.short_id }}</code>{% if not loop.last %}, {% endif %}
+                      {% endfor %}
+                    </span>
+                  {% endif %}
+                </a>
+              {% else %}
+                <div class="all-project-empty">-</div>
+              {% endfor %}
+            </div>
+          </section>
+        {% else %}
+          <div class="empty-col">No tasks</div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endfor %}
+</div>
