@@ -106,10 +106,16 @@ class _WinptySession(PtySession):
             return ""
 
     def write(self, data: str) -> None:
-        self.proc.write(data)  # type: ignore[attr-defined]
+        try:
+            self.proc.write(data)  # type: ignore[attr-defined]
+        except EOFError:
+            return
 
     def resize(self, cols: int, rows: int) -> None:
-        _resize_winpty_process(self.proc, cols, rows)
+        try:
+            _resize_winpty_process(self.proc, cols, rows)
+        except EOFError:
+            return
 
     def close(self) -> None:
         for name in ("terminate", "kill", "close"):
@@ -187,7 +193,10 @@ class _PosixPtySession(PtySession):
             return data.decode("utf-8", errors="replace")
 
     def write(self, data: str) -> None:
-        os.write(self.master_fd, data.encode("utf-8", errors="replace"))
+        try:
+            os.write(self.master_fd, data.encode("utf-8", errors="replace"))
+        except OSError:
+            return
 
     def resize(self, cols: int, rows: int) -> None:
         import fcntl
