@@ -81,18 +81,33 @@ DEFAULT_PHASE_PROMPTS: dict[str, str] = {
     ),
     "running": (
         "Now in the Running phase. Implement the work for $AGTX_TASK_ID per the "
-        "plan and ## Acceptance Criteria. When implementation is complete, run "
-        "the agtx-task-verify skill (which executes ## Verification Probes via "
-        "target-runtime-exec). If verify reports passed, call "
-        "mcp__agtx__move_task(task_id=\"$AGTX_TASK_ID\", action=\"move_forward\") "
-        "yourself to advance the task to Review. If verify reports failed, fix "
-        "the failure and re-run verify — never advance with failing probes."
+        "plan and ## Acceptance Criteria. When implementation is complete, "
+        "before calling verify: re-read your own diff "
+        "(`git diff $(git merge-base HEAD main)...HEAD` in the worktree) and "
+        "look for obvious issues — leftover debug prints, TODOs, dead or "
+        "commented-out code, unrelated changes, wrong files committed. Fix "
+        "what you find. Then run the agtx-task-verify skill (which executes "
+        "## Verification Probes via target-runtime-exec). If verify reports "
+        "passed, call mcp__agtx__move_task(task_id=\"$AGTX_TASK_ID\", "
+        "action=\"move_forward\") yourself to advance the task to Review. If "
+        "verify reports failed, fix the failure and re-run verify — never "
+        "advance with failing probes."
     ),
     "review": (
-        "Now in the Review phase. Run the agtx-task-verify skill once more and "
-        "summarize: what changed, what probes ran, what passed, any follow-ups. "
-        "Do not advance the task — wait for me to mark Done after I review the "
-        "branch."
+        "Now in the Review phase. FIRST action: verify the PR exists by "
+        "running `gh pr list --head $(git rev-parse --abbrev-ref HEAD) "
+        "--json url,number,state` in the worktree. If a PR is found, that "
+        "is THE pull request for this task — report the URL, then run the "
+        "agtx-task-verify skill once more and summarize what changed, what "
+        "probes ran, what passed, any follow-ups. DO NOT open another PR "
+        "yourself (never run `gh pr create`); harbor handles PR creation, "
+        "and Running-bounce re-entries reuse the same PR — if I move this "
+        "task back to Running for revisions, commit your fixes and push to "
+        "the SAME branch and the existing PR will pick up the new commits. "
+        "If NO PR is found, harbor's PR-on-Review step failed silently — "
+        "stop, report this to me, and do NOT open a PR yourself; I will "
+        "diagnose (usually `gh auth status` or a duplicate-branch issue) "
+        "and retry. Wait for me to mark Done after the PR is merged."
     ),
 }
 
@@ -181,19 +196,14 @@ class TransitionConfig:
     # pane capture, the response is typed and Enter is pressed. Pass an empty
     # tuple to disable; otherwise extends the defaults.
     auto_dismiss: tuple[tuple[str, str], ...] = DEFAULT_AUTO_DISMISS
-    # On Review→Done, remove the worktree (and the per-task tmux session is
-    # killed regardless). Default off so a user can inspect the branch after
-    # marking the task Done. Ignored when `pr_on_done` is on — the worktree
-    # has to stick around until the PR merges and the user clicks Cleanup in
-    # the webui.
-    cleanup_worktree_on_done: bool = False
-    # On Review→Done, push the task branch and open a PR via `gh pr create`.
-    # On by default — disable with `--no-pr-on-done` (CLI) or by passing
-    # `pr_on_done=False` to `create_app`. Failures don't block the
+    # On Running→Review, push the task branch and open a PR via `gh pr create`.
+    # On by default — disable with `--no-pr-on-review` (CLI) or by passing
+    # `pr_on_review=False` to `create_app`. Failures don't block the
     # transition — the error is recorded on the task and the user retries
     # from the UI. Skips automatically if the task already has a `pr_url`
-    # (e.g. re-Doned after a Review bounce). Requires `gh` on PATH.
-    pr_on_done: bool = True
+    # (e.g. re-entering Review after a Running bounce — the existing PR
+    # picks up new commits automatically). Requires `gh` on PATH.
+    pr_on_review: bool = True
     # Path to the shell tmux should use for new sessions on Windows. Mirrors
     # `agent.Config.default_shell` — Git Bash so `cd` and `export` work.
     # None = inherit tmux's default (cmd.exe on Windows, which breaks our POSIX
@@ -333,11 +343,14 @@ class GitOps:
             )
 
 
-# Status transitions that don't require any agent/worktree work.
-# Used for actions that just flip a column in the DB.
-_STATUS_AFTER_NOOP_TRANSITION = {
-    "move_to_review": "review",
-    "move_to_done": "done",
+# Source-status preconditions for the two explicit "move to a specific
+# column" actions. The actions themselves carry side effects (opening a PR
+# on entry to Review; tearing down the session + worktree on entry to Done)
+# so they aren't pure noops — but they share the validate-source-then-
+# transition shape, hence this lookup.
+_EXPLICIT_TARGET_SOURCE = {
+    "move_to_review": ("running", "review"),
+    "move_to_done": ("review", "done"),
 }
 
 
@@ -476,17 +489,17 @@ class TransitionWorker:
             self.db.update_task(task.id, escalation_note=req.reason or "")
             return
 
-        if action in _STATUS_AFTER_NOOP_TRANSITION:
-            target = _STATUS_AFTER_NOOP_TRANSITION[action]
-            if action == "move_to_review" and task.status != "running":
+        if action in _EXPLICIT_TARGET_SOURCE:
+            required_source, target = _EXPLICIT_TARGET_SOURCE[action]
+            if task.status != required_source:
                 raise RuntimeError(
-                    f"move_to_review requires status=running (got {task.status!r})"
+                    f"{action} requires status={required_source} "
+                    f"(got {task.status!r})"
                 )
-            if action == "move_to_done" and task.status != "review":
-                raise RuntimeError(
-                    f"move_to_done requires status=review (got {task.status!r})"
-                )
-            if action == "move_to_done":
+            if action == "move_to_review":
+                self._open_pr_for_task(task)
+                self._inject_phase_prompt(task, phase="review")
+            elif action == "move_to_done":
                 self._teardown_session(task)
             self.db.update_task(task.id, status=target)
             return
@@ -545,7 +558,9 @@ class TransitionWorker:
         elif task.status == "review":
             self.db.update_task(task.id, status="running")
         elif task.status == "done":
-            self.db.update_task(task.id, status="review")
+            # Done is terminal: the session is gone, the worktree is removed.
+            # There is no coherent way to rewind Done → Review.
+            raise RuntimeError("task is Done; Done is terminal, cannot move back")
         else:
             raise RuntimeError(f"unknown status {task.status!r}")
 
@@ -582,8 +597,10 @@ class TransitionWorker:
             self.db.update_task(task.id, status="running")
             self._inject_phase_prompt(task, phase="running")
         elif task.status == "running":
-            # Push the review prompt before flipping; agent should run
-            # agtx-task-verify and summarize before user marks Done.
+            # Open PR first (idempotent on existing pr_url so re-entering
+            # Review after a Running bounce reuses the same PR), then inject
+            # the review-phase prompt, then flip status.
+            self._open_pr_for_task(task)
             self._inject_phase_prompt(task, phase="review")
             self.db.update_task(task.id, status="review")
         elif task.status == "review":
@@ -1214,15 +1231,22 @@ class TransitionWorker:
                 return
 
     def _open_pr_for_task(self, task: Task) -> None:
-        """Push the task branch and open a PR. Failures don't abort Done."""
+        """Push the task branch and open a PR. Failures don't abort the
+        Running→Review transition — they're recorded on the task's
+        escalation_note so the user can retry from the UI.
+
+        Idempotent: if `task.pr_url` is already set, this is a no-op. That
+        path is what makes Review→Running→Review safe — the second entry
+        into Review just lets the agent push more commits to the same
+        branch and GitHub updates the existing PR automatically.
+        """
+        if not self.config.pr_on_review:
+            return
         if task.pr_url:
-            log.info("PR already opened for task %s: %s", task.id, task.pr_url)
-            self._emit("worktree_kept", {
-                "task_id": task.id, "worktree_path": task.worktree_path,
-            })
+            log.info("PR already exists for task %s: %s", task.id, task.pr_url)
             return
         if not (task.branch_name and task.worktree_path):
-            err = "pr_on_done: task has no branch_name or worktree_path"
+            err = "pr_on_review: task has no branch_name or worktree_path"
             log.warning("%s (task=%s)", err, task.id)
             self.db.update_task(task.id, escalation_note=err)
             self._emit("pr_failed", {"task_id": task.id, "error": err})
@@ -1238,13 +1262,10 @@ class TransitionWorker:
                 wt, base=self.config.base_branch,
                 title=task.title, body=body,
             )
-        except Exception as exc:  # noqa: BLE001 — record but don't fail Done
-            log.warning("pr_on_done failed for task %s: %s", task.id, exc)
-            self.db.update_task(task.id, escalation_note=f"pr_on_done: {exc}")
+        except Exception as exc:  # noqa: BLE001 — record but don't fail the move
+            log.warning("pr_on_review failed for task %s: %s", task.id, exc)
+            self.db.update_task(task.id, escalation_note=f"pr_on_review: {exc}")
             self._emit("pr_failed", {"task_id": task.id, "error": str(exc)})
-            self._emit("worktree_kept", {
-                "task_id": task.id, "worktree_path": task.worktree_path,
-            })
             return
 
         pr_number: int | None = None
@@ -1258,40 +1279,36 @@ class TransitionWorker:
         self._emit("pr_opened", {
             "task_id": task.id, "pr_url": url, "pr_number": pr_number,
         })
-        self._emit("worktree_kept", {
-            "task_id": task.id, "worktree_path": task.worktree_path,
-        })
 
     def _teardown_session(self, task: Task) -> None:
+        """Tear the per-task session and worktree down on Review→Done.
+
+        Done is terminal: the tmux session is killed and the git worktree is
+        removed. Worktree removal failures (locked, dirty, etc.) are logged
+        and emitted but do NOT block the transition — the row still flips to
+        Done. The local branch is left in place; the user can remove it via
+        the webui's Cleanup button once the PR has merged.
+        """
         if task.session_name and self.tmux.has_session(task.session_name):
             self.tmux.kill_session(task.session_name)
-        # PR-on-done overrides cleanup: the worktree has to outlive Done so the
-        # user can fix review feedback or wait for the PR to merge before
-        # clicking Cleanup in the webui.
-        if self.config.pr_on_done:
-            self._open_pr_for_task(task)
+        if not task.worktree_path:
             return
-        if self.config.cleanup_worktree_on_done and task.worktree_path:
-            wt = Path(task.worktree_path)
-            try:
-                self.git.remove_worktree(self.config.project_path, wt)
-            except Exception as exc:  # noqa: BLE001 — non-fatal
-                log.warning("worktree cleanup failed for %s: %s", wt, exc)
-                self._emit("worktree_cleanup_failed", {
-                    "task_id": task.id,
-                    "worktree_path": str(wt),
-                    "error": str(exc),
-                })
-            else:
-                self._emit("worktree_removed", {
-                    "task_id": task.id,
-                    "worktree_path": str(wt),
-                })
-        else:
-            self._emit("worktree_kept", {
+        wt = Path(task.worktree_path)
+        try:
+            self.git.remove_worktree(self.config.project_path, wt)
+        except Exception as exc:  # noqa: BLE001 — non-fatal
+            log.warning("worktree cleanup failed for %s: %s", wt, exc)
+            self._emit("worktree_cleanup_failed", {
                 "task_id": task.id,
-                "worktree_path": task.worktree_path,
+                "worktree_path": str(wt),
+                "error": str(exc),
             })
+            return
+        self.db.update_task(task.id, worktree_path=None)
+        self._emit("worktree_removed", {
+            "task_id": task.id,
+            "worktree_path": str(wt),
+        })
 
     def _default_worktree_path(self, task: Task, *, branch: str | None = None) -> Path:
         # Strip any extended-length `\\?\` prefix — a stored worktree_path may

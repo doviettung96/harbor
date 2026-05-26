@@ -122,8 +122,7 @@ class WebuiOptions:
     init_script: tuple[str, ...]
     copy_files: tuple[str, ...]
     inject_prompts: bool
-    cleanup_worktree_on_done: bool
-    pr_on_done: bool
+    pr_on_review: bool
     plugin: str | None
 
 
@@ -277,8 +276,7 @@ def create_app(
     inject_prompts: bool = True,
     agent_command_by_phase: dict[str, list[str]] | None = None,
     agent_command_by_agent: dict[str, list[str]] | None = None,
-    cleanup_worktree_on_done: bool = False,
-    pr_on_done: bool = True,
+    pr_on_review: bool = True,
     plugin: str | None = None,
     autostart_worker: bool = True,
     db: AgtxDb | None = None,
@@ -322,8 +320,7 @@ def create_app(
         init_script=tuple(init_script),
         copy_files=tuple(copy_files),
         inject_prompts=inject_prompts,
-        cleanup_worktree_on_done=cleanup_worktree_on_done,
-        pr_on_done=pr_on_done,
+        pr_on_review=pr_on_review,
         plugin=plugin,
     )
 
@@ -1384,8 +1381,7 @@ def _transition_config_for(
         copy_files=options.copy_files,
         prompt_append=cfg.agtx_prompt_append,
         inject_prompts=options.inject_prompts,
-        cleanup_worktree_on_done=options.cleanup_worktree_on_done,
-        pr_on_done=options.pr_on_done,
+        pr_on_review=options.pr_on_review,
         default_shell=cfg.default_shell,
         plugin=resolved_plugin,
     )

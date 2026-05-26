@@ -86,9 +86,9 @@ def worker_factory(memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock):
             agent_ready_timeout_s=agent_ready_timeout_s,
             prompt_submit_delay_s=prompt_submit_delay_s,
             prompt_render_timeout_s=prompt_render_timeout_s,
-            # Tests opt in to PR-on-Done explicitly so move-to-done in
+            # Tests opt in to PR-on-Review explicitly so move-to-review in
             # unrelated tests doesn't try to push a fake branch.
-            pr_on_done=False,
+            pr_on_review=False,
         )
         return TransitionWorker(
             db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
@@ -257,9 +257,11 @@ def test_move_to_review_rejects_wrong_status(memdb: AgtxDb, worker_factory):
     assert "running" in recent[0].error
 
 
-def test_move_to_done_kills_session_and_keeps_worktree(
-    memdb: AgtxDb, fake_tmux: MagicMock, worker_factory,
+def test_move_to_done_kills_session_and_removes_worktree(
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
 ):
+    """Done is terminal: kill the tmux session, `git worktree remove --force`
+    the per-task worktree, and clear `worktree_path` on the row."""
     fake_tmux.has_session.return_value = True
     insert_test_task(memdb._connect_project(), _make_task(
         id="t1", status="review",
@@ -271,10 +273,10 @@ def test_move_to_done_kills_session_and_keeps_worktree(
     worker.process_once()
 
     fake_tmux.kill_session.assert_called_once_with("task-t1--p--do")
+    fake_git.remove_worktree.assert_called_once()
     t = memdb.get_task("t1")
     assert t.status == "done"
-    # Worktree path remains in the row (not cleared) — v1 keeps it on disk.
-    assert t.worktree_path == "/repo/.worktrees/task-t1"
+    assert t.worktree_path is None
 
 
 def test_escalate_to_user_writes_note_only(memdb: AgtxDb, worker_factory):
@@ -1540,9 +1542,10 @@ def test_auto_dismiss_only_runs_once_per_dialog(
 # ---- worktree cleanup on Done --------------------------------------------
 
 
-def test_cleanup_worktree_on_done_calls_git_remove(
+def test_done_always_removes_worktree(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
 ):
+    """Done is terminal: worktree is always removed (no opt-in flag)."""
     fake_tmux.has_session.return_value = True
     insert_test_task(memdb._connect_project(), _make_task(
         id="t1", status="review",
@@ -1550,41 +1553,16 @@ def test_cleanup_worktree_on_done_calls_git_remove(
     ))
     memdb.create_transition_request(task_id="t1", action="move_to_done")
 
-    # worker_factory doesn't accept cleanup_worktree_on_done, so build inline
-    from harbor.agtx_transitions import TransitionConfig, TransitionWorker
-    cfg = TransitionConfig(
-        project_path=Path("/repo"),
-        cleanup_worktree_on_done=True,
-        pr_on_done=False,  # this test exercises the cleanup path, not the PR path
-        inject_prompts=False,
-        agent_ready_timeout_s=0.0,
-    )
-    worker = TransitionWorker(
-        db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
-    )
+    worker = worker_factory(project_path=Path("/repo"))
     worker.process_once()
 
     fake_tmux.kill_session.assert_called_once()
     fake_git.remove_worktree.assert_called_once_with(
         Path("/repo"), Path("/repo/.worktrees/task-t1"),
     )
-    assert memdb.get_task("t1").status == "done"
-
-
-def test_no_cleanup_when_flag_off(
-    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
-):
-    fake_tmux.has_session.return_value = True
-    insert_test_task(memdb._connect_project(), _make_task(
-        id="t1", status="review",
-        session_name="task-t1--p--do", worktree_path="/repo/.worktrees/task-t1",
-    ))
-    memdb.create_transition_request(task_id="t1", action="move_to_done")
-
-    worker = worker_factory()
-    worker.process_once()
-
-    fake_git.remove_worktree.assert_not_called()
+    t = memdb.get_task("t1")
+    assert t.status == "done"
+    assert t.worktree_path is None
 
 
 # ---- move_backward / move_to_backlog -------------------------------------
@@ -1640,12 +1618,19 @@ def test_move_backward_review_to_running(memdb: AgtxDb, worker_factory):
     assert memdb.get_task("t1").status == "running"
 
 
-def test_move_backward_done_to_review(memdb: AgtxDb, worker_factory):
+def test_move_backward_from_done_records_error(memdb: AgtxDb, worker_factory):
+    """Done is terminal: backward from Done is rejected (the session and
+    worktree are gone, so there's nothing to rewind to)."""
     insert_test_task(memdb._connect_project(), _make_task(id="t1", status="done"))
-    memdb.create_transition_request(task_id="t1", action="move_backward")
+    req_id = memdb.create_transition_request(task_id="t1", action="move_backward")
 
     worker_factory().process_once()
-    assert memdb.get_task("t1").status == "review"
+
+    assert memdb.get_task("t1").status == "done"
+    recent = memdb.recent_transition_requests("t1")
+    assert recent[0].id == req_id
+    assert recent[0].error is not None
+    assert "terminal" in recent[0].error
 
 
 def test_move_backward_from_backlog_records_error(memdb: AgtxDb, worker_factory):
@@ -1678,8 +1663,10 @@ def test_move_to_backlog_clears_escalation_note(
 
 
 def test_cleanup_failure_is_non_fatal(
-    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+    memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, worker_factory,
 ):
+    """A locked/dirty worktree on Done is logged but does NOT block the
+    transition — Done is terminal, the task row still flips."""
     fake_tmux.has_session.return_value = True
     fake_git.remove_worktree.side_effect = RuntimeError("git: worktree locked")
     insert_test_task(memdb._connect_project(), _make_task(
@@ -1688,32 +1675,24 @@ def test_cleanup_failure_is_non_fatal(
     ))
     memdb.create_transition_request(task_id="t1", action="move_to_done")
 
-    from harbor.agtx_transitions import TransitionConfig, TransitionWorker
-    cfg = TransitionConfig(
-        project_path=Path("/repo"),
-        cleanup_worktree_on_done=True,
-        pr_on_done=False,  # this test exercises the cleanup path, not the PR path
-        inject_prompts=False,
-        agent_ready_timeout_s=0.0,
-    )
-    worker = TransitionWorker(
-        db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
-    )
+    worker = worker_factory(project_path=Path("/repo"))
     worker.process_once()
 
-    # Task still moves to Done even if cleanup failed.
-    assert memdb.get_task("t1").status == "done"
+    t = memdb.get_task("t1")
+    assert t.status == "done"
+    # Pointer kept around so the user can retry via the manual Cleanup button.
+    assert t.worktree_path == "/repo/.worktrees/task-t1"
 
 
-# ---- PR-on-done -----------------------------------------------------------
+# ---- PR-on-review ---------------------------------------------------------
 
 
-def _pr_on_done_worker(memdb, fake_tmux, fake_git):
+def _pr_on_review_worker(memdb, fake_tmux, fake_git):
     from harbor.agtx_transitions import TransitionConfig, TransitionWorker
     cfg = TransitionConfig(
         project_path=Path("/repo"),
         base_branch="main",
-        pr_on_done=True,
+        pr_on_review=True,
         inject_prompts=False,
         agent_ready_timeout_s=0.0,
     )
@@ -1722,22 +1701,22 @@ def _pr_on_done_worker(memdb, fake_tmux, fake_git):
     )
 
 
-def test_pr_on_done_pushes_and_opens_pr(
+def test_pr_on_review_pushes_and_opens_pr(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
 ):
     fake_tmux.has_session.return_value = True
     fake_git.open_pull_request.return_value = "https://github.com/owner/repo/pull/42"
     insert_test_task(memdb._connect_project(), _make_task(
-        id="t1", title="Wire up X", status="review",
+        id="t1", title="Wire up X", status="running",
         session_name="task-t1--p--do",
         worktree_path="/repo/.worktrees/task-t1",
         branch_name="task/t1",
         description="Body of the task.",
     ))
-    memdb.create_transition_request(task_id="t1", action="move_to_done")
+    memdb.create_transition_request(task_id="t1", action="move_to_review")
 
     events: list[tuple[str, dict]] = []
-    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker = _pr_on_review_worker(memdb, fake_tmux, fake_git)
     worker.on_event = lambda name, payload: events.append((name, payload))
     worker.process_once()
 
@@ -1748,11 +1727,11 @@ def test_pr_on_done_pushes_and_opens_pr(
         Path("/repo/.worktrees/task-t1"),
         base="main", title="Wire up X", body="Body of the task.",
     )
-    # Worktree is NOT removed under pr_on_done — user has to click Cleanup.
+    # Worktree stays alive in Review — only Done removes it.
     fake_git.remove_worktree.assert_not_called()
 
     t = memdb.get_task("t1")
-    assert t.status == "done"
+    assert t.status == "review"
     assert t.pr_url == "https://github.com/owner/repo/pull/42"
     assert t.pr_number == 42
 
@@ -1760,71 +1739,73 @@ def test_pr_on_done_pushes_and_opens_pr(
     assert pr_events and pr_events[0][1]["pr_url"].endswith("/pull/42")
 
 
-def test_pr_on_done_failure_still_marks_done(
+def test_pr_on_review_failure_still_marks_review(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
 ):
+    """PR push/open failure is recorded on the task but Running→Review still
+    completes — the user can retry the push from the UI."""
     fake_tmux.has_session.return_value = True
     fake_git.push_branch.side_effect = RuntimeError("gh not authenticated")
     insert_test_task(memdb._connect_project(), _make_task(
-        id="t1", title="T", status="review",
+        id="t1", title="T", status="running",
         session_name="task-t1--p--do",
         worktree_path="/repo/.worktrees/task-t1",
         branch_name="task/t1",
     ))
-    memdb.create_transition_request(task_id="t1", action="move_to_done")
+    memdb.create_transition_request(task_id="t1", action="move_to_review")
 
     events: list[tuple[str, dict]] = []
-    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker = _pr_on_review_worker(memdb, fake_tmux, fake_git)
     worker.on_event = lambda name, payload: events.append((name, payload))
     worker.process_once()
 
     fake_git.open_pull_request.assert_not_called()
     t = memdb.get_task("t1")
-    assert t.status == "done"  # Done still wins
+    assert t.status == "review"
     assert t.pr_url is None
-    assert t.escalation_note and "pr_on_done" in t.escalation_note
+    assert t.escalation_note and "pr_on_review" in t.escalation_note
     assert any(e[0] == "pr_failed" for e in events)
 
 
-def test_pr_on_done_skips_when_already_opened(
+def test_pr_on_review_skips_when_already_opened(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
 ):
-    """Re-Done after Review bounce: don't open a second PR."""
+    """Re-entering Review after a Running bounce: don't open a second PR.
+    The existing PR on the same branch picks up the new commits."""
     fake_tmux.has_session.return_value = True
-    conn = memdb._connect_project()
-    insert_test_task(conn, _make_task(
-        id="t1", status="review",
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="running",
         session_name="task-t1--p--do",
         worktree_path="/repo/.worktrees/task-t1",
         branch_name="task/t1",
     ))
     # Stash an existing PR url directly so the early-return kicks in.
     memdb.update_task("t1", pr_url="https://github.com/owner/repo/pull/7", pr_number=7)
-    memdb.create_transition_request(task_id="t1", action="move_to_done")
+    memdb.create_transition_request(task_id="t1", action="move_to_review")
 
-    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker = _pr_on_review_worker(memdb, fake_tmux, fake_git)
     worker.process_once()
 
     fake_git.push_branch.assert_not_called()
     fake_git.open_pull_request.assert_not_called()
-    assert memdb.get_task("t1").status == "done"
+    assert memdb.get_task("t1").status == "review"
 
 
-def test_pr_on_done_skipped_when_no_branch(
+def test_pr_on_review_skipped_when_no_branch(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
 ):
-    """A task with no branch_name (e.g. dropped Backlog→Done by hand) records
-    the failure but still flips to Done."""
+    """A task with no branch_name (e.g. hand-flipped to Running) records
+    the failure but still flips to Review."""
     fake_tmux.has_session.return_value = False
     insert_test_task(memdb._connect_project(), _make_task(
-        id="t1", status="review",
+        id="t1", status="running",
     ))
-    memdb.create_transition_request(task_id="t1", action="move_to_done")
+    memdb.create_transition_request(task_id="t1", action="move_to_review")
 
-    worker = _pr_on_done_worker(memdb, fake_tmux, fake_git)
+    worker = _pr_on_review_worker(memdb, fake_tmux, fake_git)
     worker.process_once()
 
     fake_git.push_branch.assert_not_called()
     t = memdb.get_task("t1")
-    assert t.status == "done"
+    assert t.status == "review"
     assert t.escalation_note and "no branch_name" in t.escalation_note

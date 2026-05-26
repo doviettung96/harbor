@@ -1046,8 +1046,7 @@ def _ctx_and_options(tmp_path: Path, memdb: AgtxDb, *, cli_map=None):
         init_script=(),
         copy_files=(),
         inject_prompts=True,
-        cleanup_worktree_on_done=False,
-        pr_on_done=False,
+        pr_on_review=False,
         plugin=None,
     )
     return ctx, options
