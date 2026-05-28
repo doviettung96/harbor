@@ -43,7 +43,7 @@
             class="terminal-shell"
             data-terminal-root
             data-live="1"
-            data-ws-url="/ws/tmux/{{ task.id }}"
+            data-ws-url="{{ task_ws_url|default('/ws/tmux/' ~ task.id) }}"
           >
             <div class="terminal-status muted" data-terminal-status>connecting...</div>
             <div class="xterm-host" data-terminal-host></div>
@@ -115,9 +115,9 @@
     </div>
   </div>
 
-  {% if task.status == 'done' and (task.pr_url or task.worktree_path or task.branch_name) %}
+  {% if task.status in ('review', 'done') and (task.pr_url or task.worktree_path or task.branch_name) %}
     <div class="panel">
-      <h2>Done: PR &amp; cleanup</h2>
+      <h2>{% if task.status == 'review' %}Pull request{% else %}Done: branch cleanup{% endif %}</h2>
       <div class="panel-body">
         {% if task.pr_url %}
           <p style="margin-top:0;">
@@ -132,7 +132,7 @@
             {% if task.branch_name %}- branch <code>{{ task.branch_name }}</code>{% endif %}
           </p>
         {% endif %}
-        {% if task.worktree_path or task.branch_name %}
+        {% if task.status == 'done' and (task.worktree_path or task.branch_name) %}
           <form method="post" action="/projects/{{ project.project.id }}/actions/task/{{ task.id }}/cleanup-worktree" class="inline" style="margin-top:8px;"
                 onsubmit="return confirm('Remove the worktree and force-delete the local branch? Use this once the PR is merged.');">
             <button type="submit" class="danger">Cleanup worktree &amp; branch</button>
@@ -140,7 +140,7 @@
           <p class="muted" style="margin: 6px 0 0;">
             Runs <code>git worktree remove --force</code> then <code>git branch -D</code>. The remote branch (and your PR) are unaffected.
           </p>
-        {% else %}
+        {% elif task.status == 'done' %}
           <p class="muted" style="margin-top:0;">Worktree and branch already cleaned up.</p>
         {% endif %}
       </div>

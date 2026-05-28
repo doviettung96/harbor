@@ -122,8 +122,7 @@ class WebuiOptions:
     init_script: tuple[str, ...]
     copy_files: tuple[str, ...]
     inject_prompts: bool
-    cleanup_worktree_on_done: bool
-    pr_on_done: bool
+    pr_on_review: bool
     plugin: str | None
 
 
@@ -277,8 +276,7 @@ def create_app(
     inject_prompts: bool = True,
     agent_command_by_phase: dict[str, list[str]] | None = None,
     agent_command_by_agent: dict[str, list[str]] | None = None,
-    cleanup_worktree_on_done: bool = False,
-    pr_on_done: bool = True,
+    pr_on_review: bool = True,
     plugin: str | None = None,
     autostart_worker: bool = True,
     db: AgtxDb | None = None,
@@ -322,8 +320,7 @@ def create_app(
         init_script=tuple(init_script),
         copy_files=tuple(copy_files),
         inject_prompts=inject_prompts,
-        cleanup_worktree_on_done=cleanup_worktree_on_done,
-        pr_on_done=pr_on_done,
+        pr_on_review=pr_on_review,
         plugin=plugin,
     )
 
@@ -392,6 +389,134 @@ def create_app(
             for s in COLUMNS
         ]
 
+    def _all_project_color(index: int) -> str:
+        palette = (
+            "#58a6ff",
+            "#3fb950",
+            "#d29922",
+            "#f85149",
+            "#a371f7",
+            "#39c5cf",
+            "#db61a2",
+            "#8ddb8c",
+        )
+        return palette[index % len(palette)]
+
+    def _capture_session_pane(session: str | None, *, lines: int = 80) -> str:
+        if not session:
+            return ""
+        try:
+            return state.tmux.capture_pane(session, "", lines=lines)
+        except Exception:
+            return ""
+
+    def _pane_has_task_sentinel(task: Task, pane: str) -> bool:
+        if not pane:
+            return False
+        agtx_prefix = f"agtx-verify task={task.id} "
+        if agtx_prefix in pane:
+            return any(
+                marker in pane
+                for marker in (
+                    f"{agtx_prefix}probes=",
+                    f"{agtx_prefix}escalated",
+                )
+            )
+        return f"HARBOR-DONE: {task.id} " in pane
+
+    def _all_task_signal(task: Task) -> dict[str, str] | None:
+        if task.status not in {"planning", "running", "review"}:
+            return None
+        if task.escalation_note:
+            return {
+                "kind": "escalated",
+                "label": "!",
+                "title": "escalated",
+            }
+        if not task.session_name:
+            return {
+                "kind": "attention",
+                "label": "!",
+                "title": "session missing",
+            }
+        live = _is_session_live(task.session_name)
+        pane = _capture_session_pane(task.session_name) if live else ""
+        if _pane_has_task_sentinel(task, pane):
+            return {
+                "kind": "attention",
+                "label": "!",
+                "title": "sentinel reached",
+            }
+        if live:
+            return {
+                "kind": "live",
+                "label": "",
+                "title": "tmux session live",
+            }
+        return {
+            "kind": "attention",
+            "label": "!",
+            "title": "session ended",
+        }
+
+    def _all_board_columns(projects_ctx: list[ProjectContext]) -> list[dict[str, Any]]:
+        project_rows: list[dict[str, Any]] = []
+        for idx, ctx in enumerate(projects_ctx):
+            tasks_by_status: dict[str, list[dict[str, Any]]] = {s: [] for s in COLUMNS}
+            if ctx.db_initialized:
+                try:
+                    tasks = ctx.db.list_tasks()
+                except Exception:
+                    tasks = []
+                for task in tasks:
+                    if task.status not in tasks_by_status:
+                        continue
+                    tasks_by_status[task.status].append({
+                        "task": task,
+                        "project": ctx,
+                        "signal": _all_task_signal(task),
+                    })
+            project_rows.append({
+                "ctx": ctx,
+                "color": _all_project_color(idx),
+                "tasks_by_status": tasks_by_status,
+            })
+
+        columns: list[dict[str, Any]] = []
+        for status in COLUMNS:
+            groups: list[dict[str, Any]] = []
+            total = 0
+            for row in project_rows:
+                tasks = row["tasks_by_status"][status]
+                total += len(tasks)
+                if status == "done" and not tasks:
+                    continue
+                groups.append({
+                    "project": row["ctx"],
+                    "color": row["color"],
+                    "tasks": tasks,
+                    "count": len(tasks),
+                })
+            columns.append({
+                "key": status,
+                "title": COLUMN_TITLES[status],
+                "groups": groups,
+                "count": total,
+            })
+        return columns
+
+    def _find_task_project(task_id: str) -> tuple[ProjectContext, Task] | None:
+        for ctx in state.refresh_projects():
+            if not ctx.db_initialized:
+                continue
+            try:
+                task = ctx.db.get_task(task_id)
+            except Exception:
+                continue
+            if task is not None:
+                return ctx, task
+        return None
+
     def _notifications(ctx: ProjectContext) -> list:
         try:
             return ctx.db.list_notifications(limit=10)
@@ -441,6 +566,7 @@ def create_app(
         task_id: str,
         *,
         drawer: bool = False,
+        project_scoped_ws: bool = False,
     ) -> dict[str, Any]:
         task = ctx.db.get_task(task_id)
         if task is None:
@@ -455,6 +581,10 @@ def create_app(
             live_session=live_session,
             pane_capture="" if live_session else _capture_pane(task.session_name),
             attach_command=_attach_command(task.session_name),
+            task_ws_url=(
+                f"/projects/{ctx.project.id}/ws/tmux/{task.id}"
+                if project_scoped_ws else f"/ws/tmux/{task.id}"
+            ),
             dependencies=task.dependencies,
             blockers=_blockers_for(ctx, task),
             recent_requests=ctx.db.recent_transition_requests(task_id, limit=10),
@@ -606,6 +736,54 @@ def create_app(
         return templates.TemplateResponse(
             "dashboard.html",
             _template_context(request, projects=contexts),
+        )
+
+    @app.get("/all", response_class=HTMLResponse)
+    async def all_tasks(
+        request: Request,
+        task: str | None = None,
+    ) -> HTMLResponse:
+        contexts = state.refresh_projects()
+        open_task = None
+        if task:
+            found = _find_task_project(task)
+            if found is None:
+                raise HTTPException(404, f"task {task!r} not found")
+            task_ctx, _ = found
+            open_task = _task_detail_context(
+                request, task_ctx, task, drawer=True, project_scoped_ws=True,
+            )
+        return templates.TemplateResponse(
+            "all.html",
+            _template_context(
+                request,
+                projects=contexts,
+                columns=_all_board_columns(contexts),
+                open_task=open_task,
+            ),
+        )
+
+    @app.get("/all/_partials/board", response_class=HTMLResponse)
+    async def all_board_partial(request: Request) -> HTMLResponse:
+        contexts = state.refresh_projects()
+        return templates.TemplateResponse(
+            "_all_board_partial.html",
+            _template_context(
+                request,
+                projects=contexts,
+                columns=_all_board_columns(contexts),
+            ),
+        )
+
+    @app.get("/all/_partials/task/{task_id}", response_class=HTMLResponse)
+    async def all_task_partial(request: Request, task_id: str) -> HTMLResponse:
+        found = _find_task_project(task_id)
+        if found is None:
+            raise HTTPException(404, f"task {task_id!r} not found")
+        ctx, _ = found
+        return templates.TemplateResponse(
+            "_task_detail.html",
+            _task_detail_context(request, ctx, task_id, drawer=True, project_scoped_ws=True),
         )
 
     def _register_project_from_path(project_path: str, project_name: str = "") -> Project:
@@ -1384,8 +1562,7 @@ def _transition_config_for(
         copy_files=options.copy_files,
         prompt_append=cfg.agtx_prompt_append,
         inject_prompts=options.inject_prompts,
-        cleanup_worktree_on_done=options.cleanup_worktree_on_done,
-        pr_on_done=options.pr_on_done,
+        pr_on_review=options.pr_on_review,
         default_shell=cfg.default_shell,
         plugin=resolved_plugin,
     )
