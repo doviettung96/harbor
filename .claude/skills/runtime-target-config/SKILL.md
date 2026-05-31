@@ -16,7 +16,7 @@ The probe command is the user-defined readiness check. It runs before every proj
 
 - Fresh repo: `.agtx/runtime-target.json` exists only as the default `{mode:local, target:{kind:local}}`.
 - Switching from one emulator/device to another.
-- Adding `probe_command` after sweep introduces a task whose `## Runtime Target` requires an emulator/device/window.
+- Adding `probe_command` when a task's `## Worker Instructions` requires an emulator/device/window.
 - `target-runtime-exec` aborted with "probe_target.py failed" or "no probe_command set".
 
 ## Steps
@@ -95,4 +95,4 @@ The probe command is the user-defined readiness check. It runs before every proj
 - Always set `probe_command` when `target.kind != local`. The worker refuses to run task probes if it cannot first verify the target is reachable.
 - Do not write to `.agtx/runtime-target.json` directly — use the `target_runtime.py` subcommands. Direct edits skip schema validation.
 - `runtime-target.local.json` (worktree-local override, gitignored) is for per-task overrides written by the worker. Do NOT teach users to edit it manually.
-- If the user is on a fresh repo and skips this skill, the default `local`/`local` is fine — but any task that declares `## Runtime Target: emulator|device|game_window` will fail until the user runs this skill.
+- If the user is on a fresh repo and skips this skill, the default `local`/`local` is fine — but any task whose `## Worker Instructions` require an emulator/device/game-window target will fail until the user runs this skill.

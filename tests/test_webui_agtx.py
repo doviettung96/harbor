@@ -829,9 +829,7 @@ def test_task_worker_instructions_save_updates_description(app_client):
         "## Acceptance Criteria\n"
         "- done\n\n"
         "## Verification Probes\n"
-        "- echo ok\n\n"
-        "## Runtime Target\n"
-        "default\n"
+        "- echo ok\n"
     )
     insert_test_task(memdb._connect_project(), _make_task(
         id="t1", title="Detail target", status="backlog", description=description,

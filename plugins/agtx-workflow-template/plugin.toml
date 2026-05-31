@@ -1,9 +1,9 @@
 name = "agtx-workflow-template"
-description = "Game-RE oriented agtx workflow: per-task acceptance criteria, verification probes, runtime target, and worker instructions parsed by agtx-task-worker, verified by agtx-task-verify."
+description = "Game-RE oriented agtx workflow: per-task acceptance criteria, verification probes, and worker instructions parsed by agtx-task-worker, verified by agtx-task-verify."
 
 # Keep the worker session alive across phases. The agtx-task-worker skill
 # drives planning → running → review within one agent context (it reads the
-# three headers from the task description and decides what to do per phase).
+# task description headers and decides what to do per phase).
 clear_context_on_advance = false
 
 # Agents this plugin has been tested with. Empty = all agents supported.
@@ -30,7 +30,7 @@ review   = "/agtx-task-verify"
 # task's current status). Keep them short — the actual instructions live
 # in the skill markdown files at skills/agtx-task-worker/SKILL.md etc.
 [prompts]
-planning = "Plan the work for task {task_id}. Read the task headers (Acceptance Criteria, Verification Probes, Runtime Target, Worker Instructions). Do not implement yet — stop and wait for me to move the task to Running."
+planning = "Plan the work for task {task_id}. Read the task headers (Acceptance Criteria, Verification Probes, Worker Instructions). Do not implement yet — stop and wait for me to move the task to Running."
 running  = "Implement the work for task {task_id} per the plan. When done, run agtx-task-verify. If verify reports passed, call mcp__agtx__move_task(task_id=\"{task_id}\", action=\"move_forward\") yourself to advance the task to Review. If verify reports failed, fix the failure and re-run verify — never advance with failing probes."
 review   = "Run agtx-task-verify against the task's Verification Probes. Summarize what passed and any follow-ups. Do not advance the task — stop and wait for me to mark Done after I review the branch."
 

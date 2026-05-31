@@ -45,11 +45,10 @@ If the repository does not yet document a runnable build or test command, emit `
 When the worktree corresponds to an agtx task (the env var `AGTX_TASK_ID` is set, or a task can be inferred from the current branch name), the per-task acceptance is non-negotiable.
 
 1. Read the task: `mcp__agtx__get_task(task_id)`.
-2. Parse the description for two fixed sections:
+2. Parse the description for these fixed sections:
    - `## Verification Probes` — one shell command per bullet line. Each line is a standalone command.
-   - `## Runtime Target` — emulator/device/game-window override (if present). Write a worktree-local override at `<worktree>/.agtx/runtime-target.json` before running probes if this differs from the repo default.
-   - `## Worker Instructions` — optional per-task guidance such as which Android device/emulator this task owns. Harbor also writes this to `.agtx/shared-instructions.md`.
-3. Run each probe command via `target-runtime-exec` so it inherits the configured runtime target and probe gating.
+   - `## Worker Instructions` — optional per-task guidance such as which Android device/emulator this task owns, or a non-local runtime target to use. Harbor also writes this to `.agtx/shared-instructions.md`. If it names a non-local target that differs from the repo default, write a worktree-local override at `<worktree>/.agtx/runtime-target.json` before running probes.
+3. Run each probe command via `target-runtime-exec` so it inherits the configured runtime target (the repo `.agtx/runtime-target.json`, or the worktree override) and probe gating.
 4. **Hard block.** If any probe exits non-zero, do NOT report success. Append the failing command, exit code, and stderr tail to `<worktree>/.agtx/execute.md` with a UTC timestamp, then emit `blocked classification=acceptance`. The task stays in the agtx Running column until the probes pass.
 5. Repo-default tests still run. Task-scoped probes are additive, not a replacement.
 

@@ -20,17 +20,15 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
 
 2. **Parse `## Verification Probes`.** Each non-empty bullet line under the header is one shell command. Strip the leading `- ` and any trailing whitespace. If the section is missing or empty, do NOT advance — escalate via `mcp__agtx__move_task(task_id, action="escalate_to_user", note="missing ## Verification Probes section")` and stop.
 
-3. **Confirm runtime target.** Parse `## Runtime Target`. If it differs from the repo default in `.agtx/runtime-target.json`, the worker should already have written a worktree-local override; verify the override exists at `<worktree>/.agtx/runtime-target.json`. If the override is required but missing, stop and escalate.
+3. **Probe target reachability first.** Run `python scripts/shared/probe_target.py` from the worktree root. The runtime comes from `.agtx/runtime-target.json` — the repo default, or a worktree-local override the worker wrote if `## Worker Instructions` named a non-local target. If exit != 0, append the failure to `<worktree>/.agtx/execute.md` and emit `blocked classification=env`. Do NOT run task probes against an unreachable target.
 
-4. **Probe target reachability first.** Run `python scripts/shared/probe_target.py` from the worktree root. If exit != 0, append the failure to `<worktree>/.agtx/execute.md` and emit `blocked classification=env`. Do NOT run task probes against an unreachable target.
-
-5. **Run each probe.** For each parsed command:
+4. **Run each probe.** For each parsed command:
    ```
    python scripts/shared/target_runtime.py run -- <probe command>
    ```
    Capture stdout, stderr, and exit code.
 
-6. **On any non-zero exit:**
+5. **On any non-zero exit:**
    - Append a failure record to `<worktree>/.agtx/execute.md`:
      ```
      === <UTC timestamp> probe failed ===
@@ -43,18 +41,18 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
    - Do NOT call `move_task` — the task stays in `Running`.
    - Stop. Hand control back to the worker so they can fix and retry.
 
-7. **On all probes passing:**
+6. **On all probes passing:**
    - Append a success record to `<worktree>/.agtx/execute.md`:
      ```
      === <UTC timestamp> all probes passed ===
      <bulleted list of probe commands and exit codes>
      ```
-   - Continue to step 8 before declaring victory.
+   - Continue to step 7 before declaring victory.
 
-8. **Repo-default gate (optional).** Parse `## Run Repo Defaults` from the task description (case-insensitive).
+7. **Repo-default gate (optional).** Parse `## Run Repo Defaults` from the task description (case-insensitive).
    - Treat `yes`, `y`, `true`, `1`, `on`, `enabled` as opt-in. Anything else (including a missing section) is opt-out — preserving backwards compat with tasks created before this header existed.
-   - **If opt-out:** skip to step 9.
-   - **If opt-in:** invoke the `build-and-test` skill (or follow its discovery + run steps inline). It reads the repo's documented build/test commands from `README.md`, `pyproject.toml`, `package.json`, `Makefile`, or CI config and runs each via `target-runtime-exec`. Do not re-run the task's `## Verification Probes` here — they already passed in step 5.
+   - **If opt-out:** skip to step 8.
+   - **If opt-in:** invoke the `build-and-test` skill (or follow its discovery + run steps inline). It reads the repo's documented build/test commands from `README.md`, `pyproject.toml`, `package.json`, `Makefile`, or CI config and runs each via `target-runtime-exec`. Do not re-run the task's `## Verification Probes` here — they already passed in step 4.
    - **On any failure in build-and-test:**
      - Append the failing command, exit code, and stderr tail to `<worktree>/.agtx/execute.md`:
        ```
@@ -72,8 +70,8 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
      <bulleted list of build-and-test commands and exit codes>
      ```
 
-9. **Verification passed:**
-   - Print `verification passed` with the probe summary (and `+ repo defaults` if step 8 ran).
+8. **Verification passed:**
+   - Print `verification passed` with the probe summary (and `+ repo defaults` if step 7 ran).
    - Return control to the worker, who will call `mcp__agtx__move_task(task_id, action="move_forward")`.
 
 ## Hard Rules

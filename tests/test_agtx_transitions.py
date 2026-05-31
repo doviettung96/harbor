@@ -879,9 +879,7 @@ def test_task_worker_instructions_are_injected_and_written_to_worktree(
         "## Acceptance Criteria\n"
         "- done\n\n"
         "## Verification Probes\n"
-        "- echo ok\n\n"
-        "## Runtime Target\n"
-        "default\n"
+        "- echo ok\n"
     )
     insert_test_task(memdb._connect_project(), _make_task(
         id="abc12345", title="thing", description=description,
