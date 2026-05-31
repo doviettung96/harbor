@@ -68,6 +68,16 @@ DEFAULT_AGENT_COMMAND_BY_AGENT: dict[str, tuple[str, ...]] = {
     "copilot": ("gh", "copilot", "suggest"),  # best-effort; user likely overrides
 }
 
+CODEX_BYPASS_FLAGS: tuple[str, ...] = (
+    "--yolo",
+    "--dangerously-bypass-approvals-and-sandbox",
+)
+
+DEFAULT_RESUME_COMMAND_BY_AGENT: dict[str, tuple[str, ...]] = {
+    "claude": ("claude", "--continue", "--dangerously-skip-permissions"),
+    "codex": ("codex", "resume", "--last"),
+}
+
 # Default per-phase prompts pushed into the agent pane after each forward
 # transition. They reference the agtx-task-worker / agtx-task-verify skills
 # and rely on `$AGTX_TASK_ID` being set in the pane env.
@@ -537,13 +547,34 @@ class TransitionWorker:
             return
 
         if action == "resume":
+            if task.status not in ("planning", "running", "review"):
+                raise RuntimeError(
+                    "resume requires status=planning, running, or review "
+                    f"(got {task.status!r})"
+                )
             if not task.session_name:
                 raise RuntimeError("resume: task has no session_name")
             if not self.tmux.has_session(task.session_name):
-                # Re-create the session (worktree should still exist)
-                wt = task.worktree_path or self._default_worktree_path(task)
-                self.tmux.ensure_session(str(task.session_name), str(wt))
-                self._launch_agent(task.session_name)
+                if not task.worktree_path:
+                    raise RuntimeError("resume: task has no worktree_path")
+                wt = Path(task.worktree_path)
+                if not wt.exists():
+                    raise RuntimeError(f"resume: worktree_path does not exist: {wt}")
+                self.tmux.ensure_session(
+                    str(task.session_name), str(wt),
+                    default_shell=self.config.default_shell,
+                )
+                agent_argv = self._resolve_resume_agent_argv(task)
+                launcher = self._build_pane_launcher(wt, task.id, agent_argv)
+                try:
+                    self.tmux.send_keys_literal(
+                        task.session_name, "", launcher, enter=True,
+                    )
+                except TmuxError as exc:
+                    raise RuntimeError(
+                        f"tmux send-keys (agent launch) failed: {exc}"
+                    ) from exc
+                self._await_agent_or_relaunch(task.session_name, launcher)
             return
 
         raise RuntimeError(f"unknown action {action!r}")
@@ -898,6 +929,20 @@ class TransitionWorker:
         # 5. Final fallback
         return DEFAULT_AGENT_COMMAND
 
+    def _resolve_resume_agent_argv(self, task: Task) -> tuple[str, ...]:
+        if task.agent == "codex":
+            launch_argv = tuple(self._resolve_agent_argv(task=task, phase=task.status))
+            bypass_flags = tuple(
+                flag for flag in launch_argv if flag in CODEX_BYPASS_FLAGS
+            )
+            return (*DEFAULT_RESUME_COMMAND_BY_AGENT["codex"], *bypass_flags)
+
+        builtin = DEFAULT_RESUME_COMMAND_BY_AGENT.get(task.agent or "")
+        if builtin:
+            return builtin
+
+        return tuple(self._resolve_agent_argv(task=task, phase=task.status))
+
     def _maybe_enable_codex_goals(
         self, argv: Sequence[str], task: Task | None,
     ) -> tuple[str, ...]:
@@ -1064,8 +1109,8 @@ class TransitionWorker:
                 f"is at a shell prompt after two launch attempts. The agent "
                 f"likely exited on startup (e.g. codex self-update — 'Please "
                 f"restart Codex'). The phase prompt was NOT injected and the "
-                f"task stays in Backlog — retry the move once the agent "
-                f"launches cleanly in that worktree."
+                f"transition was not completed — retry once the agent launches "
+                f"cleanly in that worktree."
             )
 
     def _inject_phase_prompt(self, task: Task, *, phase: str) -> None:
