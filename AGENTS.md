@@ -9,7 +9,7 @@ This repo uses an **agtx-style task board** for tracking work, not beads. Each t
 Required flow:
 
 1. **Brainstorm** — explore the problem with the user. Do not create tasks during brainstorming.
-2. **Sweep** — invoke `agtx-sweep-with-acceptance`. It asks four questions per task (probe artifact, probe command, runtime target, worker instructions) and embeds answers as `## Acceptance Criteria` / `## Verification Probes` / `## Runtime Target` / `## Worker Instructions` headers in the task description. No task is created without all four.
+2. **Sweep** — invoke `agtx-sweep-with-acceptance`. It asks the acceptance questions per task (probe artifact, probe command, optional worker instructions, repo-default toggle) and embeds answers as `## Acceptance Criteria` / `## Verification Probes` / `## Worker Instructions` / `## Run Repo Defaults` headers in the task description. No task is created without acceptance criteria and probes. Runtime target is not a sweep question — it lives in `.agtx/runtime-target.json`.
 3. **Run** — when the user advances a task in agtx, a worker session spawns. The worker invokes `agtx-task-worker` → does the work → invokes `agtx-task-verify` before moving the task to Review.
 4. **Review** — user reviews the PR. Resume the worker session if changes are needed.
 
@@ -30,7 +30,7 @@ Required flow:
 - The kind-specific subobject (emulator name + adb_port, device id + kind, game window title pattern, etc.).
 - `target.probe_command` — user-defined readiness check. Required when `kind != local`.
 
-The worker reads the active task's `## Runtime Target` and writes a worktree-local override at `<worktree>/.agtx/runtime-target.json` if the task overrides the repo default.
+`.agtx/runtime-target.json` is the single source of truth, and `target-runtime-exec` reads it directly. Almost all work is local. When a single task needs a non-local target, the user says so in plain text under `## Worker Instructions`; the worker writes a worktree-local override at `<worktree>/.agtx/runtime-target.json` from that instruction.
 
 ## Tools
 

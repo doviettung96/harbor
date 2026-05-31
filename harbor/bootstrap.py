@@ -49,9 +49,6 @@ CONFIGURE_RUNTIME_DESCRIPTION = """Point `.agtx/runtime-target.json` at the real
 ## Verification Probes
 - python scripts/shared/target_runtime.py target show
 
-## Runtime Target
-local
-
 ## Worker Instructions
 Ask the user which runtime target to configure before changing `.agtx/runtime-target.json`; do not guess emulator, device, SSH, or game-window details.
 
@@ -69,9 +66,6 @@ WORKER_SMOKE_DESCRIPTION = """Prove a task worker can edit its own worktree and 
 
 ## Verification Probes
 - python -c "from pathlib import Path; p=Path('SMOKE_WORKER.md'); raise SystemExit(0 if p.is_file() and p.read_text(encoding='utf-8').strip() == 'harbor worker smoke ok' else 1)"
-
-## Runtime Target
-local
 
 ## Worker Instructions
 Only edit `SMOKE_WORKER.md` for this smoke task.

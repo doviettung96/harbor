@@ -75,8 +75,8 @@ DEFAULT_PHASE_PROMPTS: dict[str, str] = {
     "planning": (
         "You are the worker for an agtx task. $AGTX_TASK_ID is set in this "
         "pane's environment. Invoke the agtx-task-worker skill — read the task "
-        "description, parse the three headers (Acceptance Criteria, Verification "
-        "Probes, Runtime Target), and PLAN the work. Do not implement yet. When "
+        "description, parse the headers (Acceptance Criteria, Verification "
+        "Probes), and PLAN the work. Do not implement yet. When "
         "the plan is ready, stop and wait for me to move the task to Running."
     ),
     "running": (
@@ -1409,7 +1409,7 @@ def extract_markdown_section(text: str, header: str) -> str:
 def replace_markdown_section(text: str, header: str, body: str) -> str:
     """Replace or remove a level-2 markdown section.
 
-    New worker instructions are inserted before the acceptance/probe/runtime
+    New worker instructions are inserted before the acceptance/probe
     contract sections so the task's verification contract stays grouped.
     """
     body = body.strip()
@@ -1444,7 +1444,6 @@ def replace_markdown_section(text: str, header: str, body: str) -> str:
         if line.strip() in {
             "## Acceptance Criteria",
             "## Verification Probes",
-            "## Runtime Target",
         }:
             insert_at = idx
             break
