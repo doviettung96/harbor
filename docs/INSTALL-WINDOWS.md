@@ -10,7 +10,7 @@ This repo expects a working `tmux` binary on PATH. Earlier work in the bead-era 
 
 Those issues are documented in `WINDOWS_TMUX.md` for historical reference. **Do not use psmux.** Install a working build (the current Windows setup uses an alternative tmux that operates correctly with `new-session`, `new-window`, attach, and `kill-window -t <target>`).
 
-Verify your install before trusting the agtx workflow:
+Verify your install before trusting the Harbor workflow:
 
 ```powershell
 tmux -V
@@ -39,7 +39,7 @@ Install agtx from its README. Once installed, register the MCP server with your 
 claude mcp add agtx -- agtx mcp-serve
 ```
 
-Then trust this repo with agtx:
+Then trust this repo with harbor:
 
 ```powershell
 cd D:\Projects\harbor

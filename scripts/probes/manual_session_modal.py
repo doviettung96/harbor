@@ -23,7 +23,7 @@ from harbor.webui.server import create_app
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("HARBOR_MANUAL_SESSION_PROBE_PORT", "8765"))
-PROOF_PATH = ROOT / ".agtx" / "proofs" / "manual-session-modal.png"
+PROOF_PATH = ROOT / ".harbor" / "proofs" / "manual-session-modal.png"
 
 
 def _pid_command_line(pid: str) -> str:
@@ -109,7 +109,7 @@ def _build_app(tmpdir: Path):
     project_dir.mkdir()
     config_path = project_dir / "harbor.yml"
     config_path.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: \"claude --dangerously-skip-permissions\"\n"
         "  agent_command_by_agent:\n"
         "    claude: \"claude --dangerously-skip-permissions\"\n"

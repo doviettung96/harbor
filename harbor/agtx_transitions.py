@@ -1,6 +1,6 @@
-"""Background processor for agtx transition_requests.
+"""Background processor for task transition_requests.
 
-agtx's MCP server (`mcp__agtx__move_task`) only INSERTs a row into
+agtx's MCP server (`mcp__harbor__move_task`) only INSERTs a row into
 `transition_requests`. The actual side effects — `git worktree add`, tmux
 session creation, agent CLI launch — are normally executed by the agtx ratatui
 TUI's polling loop (`D:/Projects/agtx/src/tui/app.rs:5464`
@@ -10,7 +10,7 @@ On Windows the TUI is unusable, so harbor's webview takes over the executor
 role. This module implements the minimal-viable subset described in the plan:
 no plugin system, no agent registry, no skill resolution. Just create a
 worktree, spawn a tmux session, launch one configurable agent CLI, and let the
-agent itself walk the task forward via the `agtx-task-worker` skill.
+agent itself walk the task forward via the `harbor-task-worker` skill.
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 DEFAULT_AGENT_COMMAND: tuple[str, ...] = ("claude", "--dangerously-skip-permissions")
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_WORKTREE_DIR = ".worktrees"
-SHARED_INSTRUCTIONS_REL = Path(".agtx") / "shared-instructions.md"
+SHARED_INSTRUCTIONS_REL = Path(".harbor") / "shared-instructions.md"
 WORKER_INSTRUCTIONS_HEADER = "## Worker Instructions"
 CODEX_GOAL_HEADER = "## Codex Goal"
 _SECTION_HEADER_RE = re.compile(r"(?m)^##\s+.+$")
@@ -79,12 +79,12 @@ DEFAULT_RESUME_COMMAND_BY_AGENT: dict[str, tuple[str, ...]] = {
 }
 
 # Default per-phase prompts pushed into the agent pane after each forward
-# transition. They reference the agtx-task-worker / agtx-task-verify skills
+# transition. They reference the harbor-task-worker / harbor-task-verify skills
 # and rely on `$AGTX_TASK_ID` being set in the pane env.
 DEFAULT_PHASE_PROMPTS: dict[str, str] = {
     "planning": (
-        "You are the worker for an agtx task. $AGTX_TASK_ID is set in this "
-        "pane's environment. Invoke the agtx-task-worker skill — read the task "
+        "You are the worker for a Harbor task. $AGTX_TASK_ID is set in this "
+        "pane's environment. Invoke the harbor-task-worker skill — read the task "
         "description, parse the headers (Acceptance Criteria, Verification "
         "Probes), and PLAN the work. Do not implement yet. When "
         "the plan is ready, stop and wait for me to move the task to Running."
@@ -96,9 +96,9 @@ DEFAULT_PHASE_PROMPTS: dict[str, str] = {
         "(`git diff $(git merge-base HEAD main)...HEAD` in the worktree) and "
         "look for obvious issues — leftover debug prints, TODOs, dead or "
         "commented-out code, unrelated changes, wrong files committed. Fix "
-        "what you find. Then run the agtx-task-verify skill (which executes "
+        "what you find. Then run the harbor-task-verify skill (which executes "
         "## Verification Probes via target-runtime-exec). If verify reports "
-        "passed, call mcp__agtx__move_task(task_id=\"$AGTX_TASK_ID\", "
+        "passed, call mcp__harbor__move_task(task_id=\"$AGTX_TASK_ID\", "
         "action=\"move_forward\") yourself to advance the task to Review. If "
         "verify reports failed, fix the failure and re-run verify — never "
         "advance with failing probes."
@@ -108,7 +108,7 @@ DEFAULT_PHASE_PROMPTS: dict[str, str] = {
         "running `gh pr list --head $(git rev-parse --abbrev-ref HEAD) "
         "--json url,number,state` in the worktree. If a PR is found, that "
         "is THE pull request for this task — report the URL, then run the "
-        "agtx-task-verify skill once more and summarize what changed, what "
+        "harbor-task-verify skill once more and summarize what changed, what "
         "probes ran, what passed, any follow-ups. DO NOT open another PR "
         "yourself (never run `gh pr create`); harbor handles PR creation, "
         "and Running-bounce re-entries reuse the same PR — if I move this "
@@ -179,7 +179,7 @@ class TransitionConfig:
     # later phases reuse the same session — but the dict is keyed by phase
     # so a future "respawn on each phase" mode can plug in without changes.
     agent_command_by_phase: dict[str, Sequence[str]] = field(default_factory=dict)
-    # Mapping from agtx task.agent value (claude/codex/gemini/etc.) to argv.
+    # Mapping from task.agent value (claude/codex/gemini/etc.) to argv.
     # Resolved BEFORE agent_command_by_phase, so a per-task agent kind beats a
     # per-phase override. Falls back to DEFAULT_AGENT_COMMAND_BY_AGENT for any
     # key the user didn't supply.
@@ -223,7 +223,7 @@ class TransitionConfig:
     # Optional workflow plugin (parsed from a `plugin.toml`). When set, its
     # `commands` and `prompts` override `phase_prompts` and provide
     # auto-dismiss patterns. Skill command is typed first (e.g.
-    # `/agtx-task-worker abc12345`), then the free-text prompt — same flow
+    # `/harbor-task-worker abc12345`), then the free-text prompt — same flow
     # agtx's TUI uses.
     plugin: WorkflowPlugin | None = None
 
@@ -416,7 +416,7 @@ class TransitionWorker:
             return
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._loop, name="agtx-transition-worker", daemon=True,
+            target=self._loop, name="harbor-transition-worker", daemon=True,
         )
         self._thread.start()
 
@@ -437,7 +437,7 @@ class TransitionWorker:
                 now = time.time()
                 if now - self._last_unhealthy_log > 60:
                     log.warning(
-                        "agtx transition_requests table missing — worker idling. "
+                        "task transition_requests table missing — worker idling. "
                         "Run `python -m harbor webui-diagnose` for resolution."
                     )
                     self._last_unhealthy_log = now
@@ -447,7 +447,7 @@ class TransitionWorker:
             try:
                 self.process_once()
             except Exception:  # noqa: BLE001 — never let the loop die
-                log.exception("agtx transition loop iteration crashed")
+                log.exception("Harbor transition loop iteration crashed")
             now = time.time()
             if now - last_cleanup > 600:
                 try:
@@ -677,8 +677,8 @@ class TransitionWorker:
 
         # 3b. Deploy plugin's skills into the worktree so the agent CLI can
         #     find them when it starts up. Mirrors agtx's `write_skills_to_worktree`
-        #     (tui/app.rs:8880-8950) — writes to .agtx/skills/ AND the agent's
-        #     native discovery path (.claude/commands/agtx/, .codex/skills/, etc.).
+        #     (tui/app.rs:8880-8950) — writes to .harbor/skills/ AND the agent's
+        #     native discovery path (.claude/commands/harbor/, .codex/skills/, etc.).
         self._deploy_plugin_skills_to_worktree(worktree_path, task)
 
         # 4. tmux session in the worktree.
@@ -760,13 +760,13 @@ class TransitionWorker:
         """Copy the plugin's SKILL.md files into the worktree.
 
         Two destinations, matching agtx's `write_skills_to_worktree`:
-          1. Canonical: `<worktree>/.agtx/skills/<skill-name>/SKILL.md` — what
-             agtx-task-worker / agtx-task-verify expect when they look for
-             helper skills via `<task-cwd>/.agtx/skills/`.
+          1. Canonical: `<worktree>/.harbor/skills/<skill-name>/SKILL.md` — what
+             harbor-task-worker / harbor-task-verify expect when they look for
+             helper skills via `<task-cwd>/.harbor/skills/`.
           2. Agent-native: `<worktree>/<agent-native-path>/<skill-name>.md` —
              so the agent's slash-command auto-discovery picks them up
-             (e.g. claude looks at `.claude/commands/agtx/<name>.md` for
-             commands like `/agtx-task-worker`).
+             (e.g. claude looks at `.claude/commands/harbor/<name>.md` for
+             commands like `/harbor-task-worker`).
 
         Per-task agent (`task.agent`) determines which native path is used.
         Unknown agents skip the native deployment but still get the canonical.
@@ -784,7 +784,7 @@ class TransitionWorker:
             return
 
         # Canonical destination
-        canonical_dir = worktree_path / ".agtx" / "skills"
+        canonical_dir = worktree_path / ".harbor" / "skills"
         canonical_dir.mkdir(parents=True, exist_ok=True)
 
         # Agent-native destination (optional)

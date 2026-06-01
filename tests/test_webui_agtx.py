@@ -1,4 +1,4 @@
-"""Smoke tests for the agtx-targeted webui.
+"""Smoke tests for the Harbor-targeted webui.
 
 Spins up a TestClient against `create_app(...)` with an in-memory AgtxDb so we
 exercise routes/templates without touching the real ~/.config/agtx tree or
@@ -996,7 +996,7 @@ def test_post_escalate_queues_request_with_reason(app_client):
 def test_global_runtime_config_used_as_default(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: \"codex -m gpt-5.5 --reasoning-effort high\"\n",
         encoding="utf-8",
     )
@@ -1010,7 +1010,7 @@ def test_global_runtime_config_used_as_default(tmp_path: Path, memdb: AgtxDb):
 def test_cli_agent_command_overrides_global_runtime_config(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n",
         encoding="utf-8",
     )
@@ -1028,7 +1028,7 @@ def test_global_runtime_prompt_append_used_by_transition_config(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  prompt_append: Use emulator-5554 for Android checks.\n",
         encoding="utf-8",
     )
@@ -1057,7 +1057,7 @@ def test_settings_save_updates_global_runtime_config(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n",
         encoding="utf-8",
     )
@@ -1066,7 +1066,7 @@ def test_settings_save_updates_global_runtime_config(
     )
     with TestClient(app) as client:
         r = client.post(
-            "/actions/settings/agtx",
+            "/actions/settings/harbor",
             data={"prompt_append": "Use emulator-5554 for Android checks."},
             follow_redirects=False,
         )
@@ -1086,7 +1086,7 @@ def test_settings_save_updates_session_command_plugin_and_shell(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: claude\n",
         encoding="utf-8",
     )
@@ -1098,7 +1098,7 @@ def test_settings_save_updates_session_command_plugin_and_shell(
             "/settings/runtime",
             data={
                 "agent_command": "codex -m gpt-5.5",
-                "plugin": "agtx-workflow-template",
+                "plugin": "harbor-workflow-template",
                 "default_shell": "C:/Program Files/Git/bin/bash.exe",
                 "prompt_append": "shared",
             },
@@ -1107,14 +1107,14 @@ def test_settings_save_updates_session_command_plugin_and_shell(
         assert r.status_code == 303
 
     runtime_cfg = app.state.harbor.runtime.cfg
-    assert runtime_cfg.agtx_agent_command == ("codex", "-m", "gpt-5.5")
+    assert runtime_cfg.harbor_agent_command == ("codex", "-m", "gpt-5.5")
     assert runtime_cfg.default_shell == "C:/Program Files/Git/bin/bash.exe"
-    assert runtime_cfg.agtx_plugin == "agtx-workflow-template"
+    assert runtime_cfg.harbor_plugin == "harbor-workflow-template"
     text = runtime_yml.read_text(encoding="utf-8")
     assert "- codex" in text
     assert "- -m" in text
     assert "- gpt-5.5" in text
-    assert "plugin: agtx-workflow-template" in text
+    assert "plugin: harbor-workflow-template" in text
     assert "default_shell: C:/Program Files/Git/bin/bash.exe" in text
     assert "prompt_append: shared" in text
 
@@ -1153,8 +1153,8 @@ def test_transition_config_uses_harbor_yml_agent_map(tmp_path: Path, memdb: Agtx
     cfg = Config(
         profiles={},
         default_profile="balanced",
-        agtx_agent_command=("claude", "--dangerously-skip-permissions"),
-        agtx_agent_command_by_agent={
+        harbor_agent_command=("claude", "--dangerously-skip-permissions"),
+        harbor_agent_command_by_agent={
             "codex": ("codex", "--yolo"),
             "claude": ("claude", "--dangerously-skip-permissions"),
         },
@@ -1177,7 +1177,7 @@ def test_transition_config_cli_map_agent_overrides_harbor_yml(
     cfg = Config(
         profiles={},
         default_profile="balanced",
-        agtx_agent_command_by_agent={"codex": ("codex", "--yolo")},
+        harbor_agent_command_by_agent={"codex": ("codex", "--yolo")},
     )
     ctx, options = _ctx_and_options(
         tmp_path, memdb, cli_map={"codex": ("codex", "-m", "gpt-5.5")},
@@ -1187,7 +1187,7 @@ def test_transition_config_cli_map_agent_overrides_harbor_yml(
 
 
 _AGENT_MAP_YML = (
-    "agtx:\n"
+    "harbor:\n"
     "  agent_command_by_agent:\n"
     "    codex: \"codex --yolo\"\n"
     "    claude: \"claude\"\n"
@@ -1342,7 +1342,7 @@ def test_settings_saved_agent_command_controls_new_planning_sessions(
 def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n"
         "  prompt_append: old\n",
         encoding="utf-8",
@@ -1352,7 +1352,7 @@ def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb
     )
     with TestClient(app) as client:
         r = client.post(
-            "/actions/settings/agtx",
+            "/actions/settings/harbor",
             data={"prompt_append": ""},
             follow_redirects=False,
         )
@@ -1368,7 +1368,7 @@ def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb
 def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n  agent_command: codex\n",
+        "harbor:\n  agent_command: codex\n",
         encoding="utf-8",
     )
     project_a = tmp_path / "a"
@@ -1376,7 +1376,7 @@ def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: Ag
     project_a.mkdir()
     project_b.mkdir()
     (project_b / "harbor.yml").write_text(
-        "agtx:\n  agent_command: claude\n",
+        "harbor:\n  agent_command: claude\n",
         encoding="utf-8",
     )
     projects = [
@@ -1398,13 +1398,13 @@ def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: Ag
 def test_project_config_load_and_save_are_manual(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n  agent_command: codex\n",
+        "harbor:\n  agent_command: codex\n",
         encoding="utf-8",
     )
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     (project_dir / "harbor.yml").write_text(
-        "agtx:\n  agent_command: \"claude --yes\"\n",
+        "harbor:\n  agent_command: \"claude --yes\"\n",
         encoding="utf-8",
     )
     projects = [Project(id="p1", name="proj", path=str(project_dir), last_opened="1")]
@@ -1489,7 +1489,7 @@ def test_global_supervisor_processes_multiple_projects_and_skips_uninitialized(
 
 
 def test_setup_route_gone(tmp_path: Path, memdb: AgtxDb):
-    """The bead-era /setup page was removed in the agtx port — no route, no crumb link."""
+    """The bead-era /setup page was removed in the Harbor port — no route, no crumb link."""
     app = create_app(tmp_path, db=memdb, autostart_worker=False)
     with TestClient(app) as client:
         assert client.get("/setup").status_code == 404

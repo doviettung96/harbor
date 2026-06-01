@@ -27,6 +27,9 @@ from harbor.plugin_loader import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 # ---- file parsing ---------------------------------------------------------
 
 
@@ -62,10 +65,10 @@ def test_load_full_plugin(tmp_path: Path):
         copy_dirs = [".secrets"]
 
         [artifacts]
-        research = ".agtx/research.md"
-        planning = ".agtx/plan.md"
-        running = ".agtx/execute.md"
-        review = ".agtx/review.md"
+        research = ".harbor/research.md"
+        planning = ".harbor/plan.md"
+        running = ".harbor/execute.md"
+        review = ".harbor/review.md"
 
         [commands]
         planning = "/plan {task_id}"
@@ -95,7 +98,7 @@ def test_load_full_plugin(tmp_path: Path):
     assert plugin.supported_agents == ("claude", "codex")
     assert plugin.copy_files == (".env", "config.json")
     assert plugin.copy_dirs == (".secrets",)
-    assert plugin.artifacts.planning == ".agtx/plan.md"
+    assert plugin.artifacts.planning == ".harbor/plan.md"
     assert plugin.commands.planning == "/plan {task_id}"
     assert plugin.prompts.running == "Implement {task_id}"
     assert plugin.prompt_triggers.planning == "│ >"
@@ -133,15 +136,15 @@ def test_load_not_found_lists_search_paths(tmp_path: Path):
 
 
 def test_load_search_order(tmp_path: Path):
-    """plugins/<name>/ wins over .agtx/plugins/<name>/."""
+    """plugins/<name>/ wins over .harbor/plugins/<name>/."""
     # Create both locations with different name strings to confirm which wins.
     (tmp_path / "plugins" / "dup").mkdir(parents=True)
     (tmp_path / "plugins" / "dup" / "plugin.toml").write_text(
         'name = "from-plugins-dir"\n', encoding="utf-8",
     )
-    (tmp_path / ".agtx" / "plugins" / "dup").mkdir(parents=True)
-    (tmp_path / ".agtx" / "plugins" / "dup" / "plugin.toml").write_text(
-        'name = "from-agtx-dir"\n', encoding="utf-8",
+    (tmp_path / ".harbor" / "plugins" / "dup").mkdir(parents=True)
+    (tmp_path / ".harbor" / "plugins" / "dup" / "plugin.toml").write_text(
+        'name = "from-harbor-dir"\n', encoding="utf-8",
     )
     plugin = load_plugin("dup", repo_root=tmp_path)
     assert plugin.name == "from-plugins-dir"
@@ -234,11 +237,11 @@ def test_resolve_skill_command_with_no_plugin():
 def test_phase_artifact_exists_simple(tmp_path: Path):
     plugin = WorkflowPlugin(
         name="p",
-        artifacts=PluginArtifacts(planning=".agtx/plan.md"),
+        artifacts=PluginArtifacts(planning=".harbor/plan.md"),
     )
-    (tmp_path / ".agtx").mkdir()
+    (tmp_path / ".harbor").mkdir()
     assert phase_artifact_exists(plugin, "planning", worktree_path=tmp_path) is False
-    (tmp_path / ".agtx" / "plan.md").write_text("plan")
+    (tmp_path / ".harbor" / "plan.md").write_text("plan")
     assert phase_artifact_exists(plugin, "planning", worktree_path=tmp_path) is True
 
 
@@ -257,15 +260,15 @@ def test_determine_phase_variant_planning(tmp_path: Path):
     plugin = WorkflowPlugin(
         name="p",
         artifacts=PluginArtifacts(
-            research=".agtx/research.md",
-            planning=".agtx/plan.md",
+            research=".harbor/research.md",
+            planning=".harbor/plan.md",
         ),
     )
     # Without research artifact → plain planning
     assert determine_phase_variant(plugin, "planning", worktree_path=tmp_path) == "planning"
     # With research artifact → planning_with_research
-    (tmp_path / ".agtx").mkdir()
-    (tmp_path / ".agtx" / "research.md").write_text("r")
+    (tmp_path / ".harbor").mkdir()
+    (tmp_path / ".harbor" / "research.md").write_text("r")
     assert (
         determine_phase_variant(plugin, "planning", worktree_path=tmp_path)
         == "planning_with_research"
@@ -276,13 +279,13 @@ def test_determine_phase_variant_running(tmp_path: Path):
     plugin = WorkflowPlugin(
         name="p",
         artifacts=PluginArtifacts(
-            research=".agtx/research.md",
-            planning=".agtx/plan.md",
+            research=".harbor/research.md",
+            planning=".harbor/plan.md",
         ),
     )
     assert determine_phase_variant(plugin, "running", worktree_path=tmp_path) == "running"
-    (tmp_path / ".agtx").mkdir()
-    (tmp_path / ".agtx" / "plan.md").write_text("p")
+    (tmp_path / ".harbor").mkdir()
+    (tmp_path / ".harbor" / "plan.md").write_text("p")
     assert (
         determine_phase_variant(plugin, "running", worktree_path=tmp_path)
         == "running_with_research_or_planning"
@@ -359,22 +362,22 @@ def test_resolve_skills_dir_none_when_no_source_path():
 
 
 def test_workflow_template_plugin_loads():
-    """Sanity check: the plugin we ship in plugins/agtx-workflow-template/
+    """Sanity check: the plugin we ship in plugins/harbor-workflow-template/
     parses cleanly and has the expected commands."""
-    plugin = load_plugin("agtx-workflow-template", repo_root=Path("D:/Projects/harbor"))
-    assert plugin.name == "agtx-workflow-template"
-    assert plugin.commands.planning == "/agtx-task-worker {task_id}"
-    assert plugin.commands.running == "/agtx-task-worker {task_id}"
-    assert plugin.commands.review == "/agtx-task-verify"
-    assert plugin.artifacts.planning == ".agtx/plan.md"
+    plugin = load_plugin("harbor-workflow-template", repo_root=REPO_ROOT)
+    assert plugin.name == "harbor-workflow-template"
+    assert plugin.commands.planning == "/harbor-task-worker {task_id}"
+    assert plugin.commands.running == "/harbor-task-worker {task_id}"
+    assert plugin.commands.review == "/harbor-task-verify"
+    assert plugin.artifacts.planning == ".harbor/plan.md"
     assert "Yes, I accept" in plugin.auto_dismiss[0].detect
 
 
 def test_workflow_template_skills_resolve_to_claude_skills():
-    """The in-repo agtx-workflow-template plugin has no bundled skills/;
+    """The in-repo harbor-workflow-template plugin has no bundled skills/;
     resolve_skills_dir must fall back to harbor's .claude/skills/."""
-    repo = Path("D:/Projects/harbor")
-    plugin = load_plugin("agtx-workflow-template", repo_root=repo)
+    repo = REPO_ROOT
+    plugin = load_plugin("harbor-workflow-template", repo_root=repo)
     skills_dir = resolve_skills_dir(plugin)
     assert skills_dir == repo / ".claude" / "skills"
-    assert (skills_dir / "agtx-task-worker" / "SKILL.md").exists()
+    assert (skills_dir / "harbor-task-worker" / "SKILL.md").exists()

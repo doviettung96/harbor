@@ -17,7 +17,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = REPO_ROOT / ".agtx" / "runtime-target.json"
+CONFIG_PATH = REPO_ROOT / ".harbor" / "runtime-target.json"
 PROBE_TARGET_SCRIPT = REPO_ROOT / "scripts" / "shared" / "probe_target.py"
 DEFAULT_TARGET = {
     "kind": "local",
@@ -38,7 +38,7 @@ DEFAULT_CONFIG = {
 }
 EXCLUDE_DIRS = {
     ".git",
-    ".agtx",
+    ".harbor",
     ".beads",
     ".claude",
     ".codex",
@@ -420,7 +420,7 @@ def probe_target(config: dict[str, Any]) -> None:
         if result.returncode != 0:
             raise ConfigError(
                 f"probe_target.py failed (exit {result.returncode}); "
-                "set target.probe_command in .agtx/runtime-target.json or fix the target"
+                "set target.probe_command in .harbor/runtime-target.json or fix the target"
             )
         return
 
@@ -486,7 +486,7 @@ def sync_with_rsync(config: dict[str, Any]) -> None:
         rsync,
         "-az",
         "--exclude=.git/",
-        "--exclude=.agtx/",
+        "--exclude=.harbor/",
         "--exclude=.beads/",
         "--exclude=.claude/",
         "--exclude=.codex/",
