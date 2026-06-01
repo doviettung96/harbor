@@ -76,7 +76,7 @@
       aria-live="polite"
     >
       {% if open_task %}
-        {% with request=open_task.request, projects=open_task.projects, selected_project=open_task.selected_project, selected_project_id=open_task.selected_project_id, runtime=open_task.runtime, project=open_task.project, task=open_task.task, drawer=open_task.drawer, live_session=open_task.live_session, pane_capture=open_task.pane_capture, attach_command=open_task.attach_command, dependencies=open_task.dependencies, blockers=open_task.blockers, recent_requests=open_task.recent_requests, valid_statuses=open_task.valid_statuses, codex_goal_enabled=open_task.codex_goal_enabled, worker_instructions=open_task.worker_instructions %}
+        {% with request=open_task.request, projects=open_task.projects, selected_project=open_task.selected_project, selected_project_id=open_task.selected_project_id, runtime=open_task.runtime, project=open_task.project, task=open_task.task, drawer=open_task.drawer, live_session=open_task.live_session, resume_available=open_task.resume_available, pane_capture=open_task.pane_capture, attach_command=open_task.attach_command, dependencies=open_task.dependencies, blockers=open_task.blockers, recent_requests=open_task.recent_requests, valid_statuses=open_task.valid_statuses, codex_goal_enabled=open_task.codex_goal_enabled, worker_instructions=open_task.worker_instructions %}
           {% include "_task_detail.html" %}
         {% endwith %}
       {% elif open_planning %}

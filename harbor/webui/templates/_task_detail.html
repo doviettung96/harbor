@@ -50,6 +50,13 @@
           </div>
         {% else %}
           <p class="muted" style="margin-top:0;">The task has a session name, but Harbor cannot see a live tmux session for it right now.</p>
+          {% if resume_available %}
+            <form method="post" action="/actions/move/{{ task.id }}" class="inline" data-resume-control style="margin-bottom: 10px;">
+              <input type="hidden" name="action" value="resume">
+              <button type="submit">Resume</button>
+              <span class="muted">Session lost</span>
+            </form>
+          {% endif %}
           <pre class="pane-capture">{{ pane_capture }}</pre>
         {% endif %}
 

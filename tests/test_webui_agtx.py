@@ -203,6 +203,95 @@ def test_pane_partial_empty_when_no_session(app_client):
     assert "<pre" in r.text  # rendered, just empty
 
 
+def test_resume_control_renders_for_dead_running_task_with_worktree(app_client, tmp_path: Path):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", title="Resume target", status="running", session_name="task-fake",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "Resume target" in r.text
+    assert "cannot see a live tmux session" in r.text
+    assert "data-resume-control" in r.text
+    assert 'action="/actions/move/t1"' in r.text
+    assert 'name="action" value="resume"' in r.text
+    assert ">Resume</button>" in r.text
+
+
+@pytest.mark.parametrize("status", ["planning", "running", "review"])
+def test_resume_control_hidden_when_worktree_missing(app_client, status: str):
+    client, memdb, fake_tmux = app_client
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, session_name="task-fake",
+    ))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+def test_resume_control_hidden_for_live_session(app_client, tmp_path: Path):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="running", session_name="task-live",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = True
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-terminal-root" in r.text
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+@pytest.mark.parametrize("status", ["backlog", "done"])
+def test_resume_control_hidden_for_backlog_and_done(app_client, tmp_path: Path, status: str):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / status
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, session_name="task-fake",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+def test_post_resume_queues_existing_move_action(app_client):
+    client, memdb, _ = app_client
+    insert_test_task(memdb._connect_project(), _make_task(id="t1", status="running"))
+
+    r = client.post(
+        "/actions/move/t1",
+        data={"action": "resume"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    pending = memdb.pending_transition_requests()
+    assert len(pending) == 1
+    assert pending[0].task_id == "t1"
+    assert pending[0].action == "resume"
+
+
 def test_board_query_renders_planning_session_drawer(app_client):
     client, _, fake_tmux = app_client
     fake_tmux.has_session.return_value = True
