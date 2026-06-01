@@ -572,6 +572,13 @@ def create_app(
         if task is None:
             raise HTTPException(404, f"task {task_id!r} not found")
         live_session = _is_session_live(task.session_name)
+        resume_available = (
+            bool(task.session_name)
+            and not live_session
+            and task.status in {"planning", "running", "review"}
+            and bool(task.worktree_path)
+            and Path(task.worktree_path).exists()
+        )
         return _template_context(
             request,
             selected=ctx,
@@ -579,6 +586,7 @@ def create_app(
             task=task,
             drawer=drawer,
             live_session=live_session,
+            resume_available=resume_available,
             pane_capture="" if live_session else _capture_pane(task.session_name),
             attach_command=_attach_command(task.session_name),
             task_ws_url=(
