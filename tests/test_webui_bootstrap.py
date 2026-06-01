@@ -88,13 +88,13 @@ def test_post_bootstrap_applies_plan_and_page_reloads_bootstrapped(tmp_path: Pat
     assert r.status_code == 200
     assert "bootstrapped" in r.text
     assert not build_plan(project_dir).pending_operations
-    assert (project_dir / ".agtx" / "plugins" / PLUGIN_NAME / "plugin.toml").is_file()
+    assert (project_dir / ".harbor" / "plugins" / PLUGIN_NAME / "plugin.toml").is_file()
     assert (project_dir / "harbor.yml").is_file()
-    assert (project_dir / ".agtx" / "runtime-target.json").is_file()
+    assert (project_dir / ".harbor" / "runtime-target.json").is_file()
     for name in _skill_names():
         assert (project_dir / ".claude" / "skills" / name / "SKILL.md").is_file()
         assert (project_dir / ".codex" / "skills" / f"{name}.md").is_file()
-        assert (project_dir / ".agtx" / "skills" / name / "SKILL.md").is_file()
+        assert (project_dir / ".harbor" / "skills" / name / "SKILL.md").is_file()
 
 
 def test_second_visit_shows_bootstrapped_or_stale_when_project_files_change(tmp_path: Path):

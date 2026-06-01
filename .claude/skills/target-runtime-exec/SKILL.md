@@ -1,6 +1,6 @@
 ---
 name: target-runtime-exec
-description: "Use when project execution should follow the repo's selected runtime target instead of assuming the local machine. This covers build, test, run, deploy, migration, codegen, environment-bootstrap, or game-RE probe commands that should route through `scripts/shared/target_runtime.py` when `.agtx/runtime-target.json` selects SSH or pins a specific emulator/device/game window."
+description: "Use when project execution should follow the repo's selected runtime target instead of assuming the local machine. This covers build, test, run, deploy, migration, codegen, environment-bootstrap, or game-RE probe commands that should route through `scripts/shared/target_runtime.py` when `.harbor/runtime-target.json` selects SSH or pins a specific emulator/device/game window."
 ---
 
 # Target Runtime Exec
@@ -79,5 +79,5 @@ The helper injects these env vars into the child process when `target.kind` is n
 - If the configured target is invalid, stop and report the exact config or connectivity problem.
 - If the surrounding task is `Configure target runtime for this repo`, ask the user to choose `local`, `ssh`, `emulator`, `device`, or `game_window` before treating the current config as the answer.
 - If the user chooses `ssh`, collect or confirm `ssh_host`, `remote_platform`, and `remote_workdir` before proceeding.
-- If the user chooses `emulator`, `device`, or `game_window`, collect or confirm the corresponding subobject in `.agtx/runtime-target.json` and define `target.probe_command` so probes are reproducible.
+- If the user chooses `emulator`, `device`, or `game_window`, collect or confirm the corresponding subobject in `.harbor/runtime-target.json` and define `target.probe_command` so probes are reproducible.
 - If Python-based commands should run under a specific remote interpreter, collect or confirm `remote_python` too.

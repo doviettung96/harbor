@@ -1,4 +1,4 @@
-"""Read agtx-format workflow plugins.
+"""Read Harbor workflow plugins.
 
 A plugin is a directory containing `plugin.toml` (the workflow config: per-phase
 commands, artifacts, prompts, agent overrides, auto-dismiss patterns) and
@@ -6,17 +6,17 @@ optionally a bundled `skills/` subdirectory. Harbor's transition worker uses
 the plugin's `commands`/`prompts` instead of the hardcoded
 `DEFAULT_PHASE_PROMPTS` when a plugin is configured.
 
-This module is a faithful (if minimal) Python port of agtx's
+This module is a faithful (if minimal) Python port of upstream agtx's
 `WorkflowPlugin` (D:/Projects/agtx/src/config/mod.rs:427-615). We omit
-runtime-only concerns agtx wires up elsewhere (e.g., `copy_back` ↔ TUI's
+runtime-only concerns upstream agtx wires up elsewhere (e.g., `copy_back` ↔ TUI's
 per-phase reuse, `cyclic` ↔ Review→Planning loop). When the user asks for a
 feature we don't yet support, harbor falls back to its hardcoded defaults
 and prints a warning.
 
-Plugin search order (matches agtx's `WorkflowPlugin::load()`):
+Plugin search order:
   1. `<repo>/plugins/<name>/plugin.toml`            (harbor convention)
-  2. `<repo>/.agtx/plugins/<name>/plugin.toml`       (agtx project-local)
-  3. `~/.config/agtx/plugins/<name>/plugin.toml`     (agtx global)
+  2. `<repo>/.harbor/plugins/<name>/plugin.toml`     (project-local)
+  3. `~/.config/harbor/plugins/<name>/plugin.toml`   (global)
 
 If `<name>` is itself a path (contains a separator), we just resolve it and
 read the file directly — useful for ad-hoc testing.
@@ -40,12 +40,12 @@ except ImportError:  # Python <3.11 fallback
 # Map: agent kind → (base_dir relative to worktree, namespace subdir).
 # When namespace is empty (codex, opencode, cursor), skills land directly in base_dir.
 AGENT_NATIVE_PATHS: dict[str, tuple[str, str]] = {
-    "claude":   (".claude/commands", "agtx"),
-    "gemini":   (".gemini/commands", "agtx"),
+    "claude":   (".claude/commands", "harbor"),
+    "gemini":   (".gemini/commands", "harbor"),
     "opencode": (".opencode/command", ""),
     "codex":    (".codex/skills", ""),
     "cursor":   (".cursor/skills", ""),
-    "copilot":  (".github/agents", "agtx"),
+    "copilot":  (".github/agents", "harbor"),
 }
 
 
@@ -116,12 +116,12 @@ class AutoDismiss:
 # D:/Projects/agtx/src/skills.rs:35-44. When namespace is "", skills land
 # directly in the base dir; otherwise under `<base>/<namespace>/`.
 AGENT_NATIVE_PATHS: dict[str, tuple[str, str]] = {
-    "claude":   (".claude/commands", "agtx"),
-    "gemini":   (".gemini/commands", "agtx"),
+    "claude":   (".claude/commands", "harbor"),
+    "gemini":   (".gemini/commands", "harbor"),
     "opencode": (".opencode/command", ""),
     "codex":    (".codex/skills", ""),
     "cursor":   (".cursor/skills", ""),
-    "copilot":  (".github/agents", "agtx"),
+    "copilot":  (".github/agents", "harbor"),
 }
 
 
@@ -170,30 +170,22 @@ def _search_paths(name: str, repo_root: Path) -> list[Path]:
     """Return candidate paths for plugin <name>'s plugin.toml in priority order."""
     return [
         repo_root / "plugins" / name / "plugin.toml",
-        repo_root / ".agtx" / "plugins" / name / "plugin.toml",
+        repo_root / ".harbor" / "plugins" / name / "plugin.toml",
         _global_plugin_root() / name / "plugin.toml",
     ]
 
 
 def _global_plugin_root() -> Path:
-    """Mirror agtx's global plugin location across platforms.
-
-    agtx reads `$HOME` directly (D:/Projects/agtx/src/config/mod.rs:603) and
-    appends `.config/agtx/plugins`. We follow the SAME convention on every
-    platform so a plugin installed via `agtx`'s tooling is findable by harbor
-    and vice-versa. On native Windows, `Path.home()` returns the user profile
-    (e.g. `C:\\Users\\Admin`), so the resolved path is
-    `C:\\Users\\Admin\\.config\\agtx\\plugins`.
-    """
+    """Return Harbor's global plugin location across platforms."""
     home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".config" / "agtx" / "plugins"
+    return Path(home) / ".config" / "harbor" / "plugins"
 
 
 def load_plugin(name_or_path: str, *, repo_root: Path) -> WorkflowPlugin:
     """Load a plugin by name (searches) or by direct path to plugin.toml or dir.
 
     `name_or_path` may be:
-      - A plain name like `agtx-workflow-template` → searched per `_search_paths`
+      - A plain name like `harbor-workflow-template` → searched per `_search_paths`
       - A directory path → reads `<dir>/plugin.toml`
       - A file path → reads that file directly
     """
@@ -304,10 +296,10 @@ def resolve_skills_dir(plugin: WorkflowPlugin) -> Path | None:
 
       1. **Bundled** — `<plugin-dir>/skills/`. This is how a distributed
          plugin ships: `install.py` copies the skills into the plugin dir so
-         it is self-contained at its install location (`.agtx/plugins/...`
-         or `~/.config/agtx/plugins/...`).
+         it is self-contained at its install location (`.harbor/plugins/...`
+         or `~/.config/harbor/plugins/...`).
 
-      2. **In-repo** — harbor's own `agtx-workflow-template` plugin does NOT
+      2. **In-repo** — harbor's own `harbor-workflow-template` plugin does NOT
          bundle a `skills/` dir. The single canonical copy lives at the repo
          root in `.claude/skills/`, so harbor's own Claude Code sessions
          auto-discover the skills. For a plugin at

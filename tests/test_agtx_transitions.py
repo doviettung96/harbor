@@ -451,7 +451,7 @@ def test_planning_prompt_injected_after_spawn(
     assert fake_tmux.send_keys_literal.called
     args, kwargs = fake_tmux.send_keys_literal.call_args
     prompt_text = args[2] if len(args) > 2 else kwargs.get("text", "")
-    assert "Planning" in prompt_text or "agtx-task-worker" in prompt_text
+    assert "Planning" in prompt_text or "harbor-task-worker" in prompt_text
 
 
 def test_running_prompt_injected_on_planning_to_running(
@@ -491,7 +491,7 @@ def test_review_prompt_injected_on_running_to_review(
     assert fake_tmux.send_keys_literal.called
     args, kwargs = fake_tmux.send_keys_literal.call_args
     prompt_text = args[2] if len(args) > 2 else kwargs.get("text", "")
-    assert "Review" in prompt_text or "agtx-task-verify" in prompt_text
+    assert "Review" in prompt_text or "harbor-task-verify" in prompt_text
 
 
 def test_inject_prompts_disabled_skips_send_keys_literal(
@@ -621,7 +621,7 @@ def test_spawn_aborts_when_agent_falls_back_to_shell(
     typed = [c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
              if len(c.args) >= 3]
     assert len(typed) == 2 and typed[0] == typed[1]
-    assert not any("agtx-task-worker" in t for t in typed)
+    assert not any("harbor-task-worker" in t for t in typed)
 
 
 def test_spawn_proceeds_when_agent_marker_appears(
@@ -642,7 +642,7 @@ def test_spawn_proceeds_when_agent_marker_appears(
     typed = [c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
              if len(c.args) >= 3]
     # Exactly one launcher (no relaunch) + the prompt body.
-    assert any("agtx-task-worker" in t for t in typed)
+    assert any("harbor-task-worker" in t for t in typed)
 
 
 # ---- resume dead sessions -------------------------------------------------
@@ -703,7 +703,7 @@ def test_resume_dead_session_recreates_with_worktree_launcher(
     assert f"cd '{worktree_posix}'" in launcher
     assert "export AGTX_TASK_ID='t1'" in launcher
     assert "exec claude --continue --dangerously-skip-permissions" in launcher
-    assert "agtx-task-worker" not in launcher
+    assert "harbor-task-worker" not in launcher
     assert memdb.get_task("t1").status == status
 
 
@@ -802,7 +802,7 @@ def _make_fake_plugin_with_skills(tmp_path: Path, skill_names: list[str]) -> "Wo
         (skill_dir / "helper.txt").write_text("support", encoding="utf-8")
     return WorkflowPlugin(
         name="fake-plugin",
-        commands=PluginCommands(planning="/agtx-task-worker {task_id}"),
+        commands=PluginCommands(planning="/harbor-task-worker {task_id}"),
         source_path=plugin_root / "plugin.toml",
     )
 
@@ -811,8 +811,8 @@ def test_plugin_skills_deployed_to_canonical_and_claude_native(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, tmp_path: Path,
 ):
     """When task.agent is 'claude', skills land at both
-    <worktree>/.agtx/skills/<name>/SKILL.md AND
-    <worktree>/.claude/commands/agtx/<name>.md."""
+    <worktree>/.harbor/skills/<name>/SKILL.md AND
+    <worktree>/.claude/commands/harbor/<name>.md."""
     project = tmp_path / "project"
     project.mkdir()
     worktree_root = project / ".worktrees"
@@ -821,7 +821,7 @@ def test_plugin_skills_deployed_to_canonical_and_claude_native(
     (worktree_root / "task-aaa").mkdir()
 
     plugin = _make_fake_plugin_with_skills(
-        tmp_path, ["agtx-task-worker", "agtx-task-verify"],
+        tmp_path, ["harbor-task-worker", "harbor-task-verify"],
     )
 
     insert_test_task(memdb._connect_project(), _make_task(
@@ -843,17 +843,17 @@ def test_plugin_skills_deployed_to_canonical_and_claude_native(
     # placeholder that simulates "already-exists GitOps no-op").
     worktree = next(
         d for d in worktree_root.iterdir()
-        if d.is_dir() and (d / ".agtx" / "skills").exists()
+        if d.is_dir() and (d / ".harbor" / "skills").exists()
     )
 
     # Canonical: keeps directory layout including supporting files
-    assert (worktree / ".agtx" / "skills" / "agtx-task-worker" / "SKILL.md").exists()
-    assert (worktree / ".agtx" / "skills" / "agtx-task-worker" / "helper.txt").exists()
-    assert (worktree / ".agtx" / "skills" / "agtx-task-verify" / "SKILL.md").exists()
+    assert (worktree / ".harbor" / "skills" / "harbor-task-worker" / "SKILL.md").exists()
+    assert (worktree / ".harbor" / "skills" / "harbor-task-worker" / "helper.txt").exists()
+    assert (worktree / ".harbor" / "skills" / "harbor-task-verify" / "SKILL.md").exists()
 
-    # Agent-native (claude → .claude/commands/agtx/<name>.md)
-    assert (worktree / ".claude" / "commands" / "agtx" / "agtx-task-worker.md").exists()
-    assert (worktree / ".claude" / "commands" / "agtx" / "agtx-task-verify.md").exists()
+    # Agent-native (claude → .claude/commands/harbor/<name>.md)
+    assert (worktree / ".claude" / "commands" / "harbor" / "harbor-task-worker.md").exists()
+    assert (worktree / ".claude" / "commands" / "harbor" / "harbor-task-verify.md").exists()
 
 
 def test_plugin_skills_deployed_to_codex_native(
@@ -881,18 +881,18 @@ def test_plugin_skills_deployed_to_codex_native(
 
     worktree = next(
         d for d in (project / ".worktrees").iterdir()
-        if d.is_dir() and (d / ".agtx" / "skills").exists()
+        if d.is_dir() and (d / ".harbor" / "skills").exists()
     )
-    assert (worktree / ".agtx" / "skills" / "my-skill" / "SKILL.md").exists()
+    assert (worktree / ".harbor" / "skills" / "my-skill" / "SKILL.md").exists()
     # codex's mapping is (".codex/skills", "") — namespace empty, so no agtx/ subdir
     assert (worktree / ".codex" / "skills" / "my-skill.md").exists()
-    assert not (worktree / ".codex" / "skills" / "agtx" / "my-skill.md").exists()
+    assert not (worktree / ".codex" / "skills" / "harbor" / "my-skill.md").exists()
 
 
 def test_plugin_skills_unknown_agent_canonical_only(
     memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock, tmp_path: Path,
 ):
-    """task.agent='unknown' → still deploy to .agtx/skills/ but skip agent-native."""
+    """task.agent='unknown' → still deploy to .harbor/skills/ but skip agent-native."""
     project = tmp_path / "project"
     project.mkdir()
     (project / ".worktrees" / "task-ccc").mkdir(parents=True)
@@ -913,9 +913,9 @@ def test_plugin_skills_unknown_agent_canonical_only(
 
     worktree = next(
         d for d in (project / ".worktrees").iterdir()
-        if d.is_dir() and (d / ".agtx" / "skills").exists()
+        if d.is_dir() and (d / ".harbor" / "skills").exists()
     )
-    assert (worktree / ".agtx" / "skills" / "only-skill" / "SKILL.md").exists()
+    assert (worktree / ".harbor" / "skills" / "only-skill" / "SKILL.md").exists()
     # No agent-native path should have been touched
     assert not (worktree / ".claude").exists()
     assert not (worktree / ".codex").exists()
@@ -941,11 +941,11 @@ def test_no_plugin_means_no_skill_deployment(
         db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
     ).process_once()
 
-    # In the no-plugin case neither .agtx/skills nor .claude should be written
+    # In the no-plugin case neither .harbor/skills nor .claude should be written
     # in ANY of the .worktrees children — including the placeholder we
-    # pre-created (it has no .agtx/ subdir, which is what we're asserting).
+    # pre-created (it has no .harbor/ subdir, which is what we're asserting).
     for worktree in (project / ".worktrees").iterdir():
-        assert not (worktree / ".agtx" / "skills").exists()
+        assert not (worktree / ".harbor" / "skills").exists()
         assert not (worktree / ".claude").exists()
 
 
@@ -1039,7 +1039,7 @@ def test_task_worker_instructions_are_injected_and_written_to_worktree(
     assert any("Task-specific worker instructions" in t for t in typed), typed
     assert any("Use emulator-5554" in t for t in typed), typed
 
-    shared = tmp_path / ".worktrees" / "task-abc12345" / ".agtx" / "shared-instructions.md"
+    shared = tmp_path / ".worktrees" / "task-abc12345" / ".harbor" / "shared-instructions.md"
     assert "Use emulator-5554" in shared.read_text(encoding="utf-8")
 
 
@@ -1113,7 +1113,7 @@ def test_task_without_worker_instructions_does_not_write_shared_file(
     )
     worker.process_once()
 
-    shared = tmp_path / ".worktrees" / "task-abc12345" / ".agtx" / "shared-instructions.md"
+    shared = tmp_path / ".worktrees" / "task-abc12345" / ".harbor" / "shared-instructions.md"
     assert not shared.exists()
 
 
@@ -1149,7 +1149,7 @@ def test_plugin_falls_back_to_default_prompts_when_unconfigured(
 
     typed = [c.args[2] for c in fake_tmux.send_keys_literal.call_args_list if len(c.args) >= 3]
     # Hardcoded "You are the worker for an agtx task" should still appear
-    assert any("agtx-task-worker skill" in t for t in typed), \
+    assert any("harbor-task-worker skill" in t for t in typed), \
         f"expected hardcoded fallback prompt, got: {typed}"
 
 
@@ -1243,7 +1243,7 @@ def test_deploy_skills_to_worktree_canonical_and_agent_native(
     memdb: AgtxDb, fake_tmux: MagicMock, tmp_path: Path,
 ):
     """When plugin has skills/, _spawn_session writes them to BOTH:
-       - <worktree>/.agtx/skills/<skill>/SKILL.md (canonical)
+       - <worktree>/.harbor/skills/<skill>/SKILL.md (canonical)
        - <worktree>/<agent-native-path>/<skill>.md (agent-native)
     """
     from harbor.plugin_loader import (
@@ -1295,13 +1295,13 @@ def test_deploy_skills_to_worktree_canonical_and_agent_native(
     worker.process_once()
 
     # Canonical layout preserved (whole dir copied, including helper.txt)
-    canonical = worktree_path / ".agtx" / "skills"
+    canonical = worktree_path / ".harbor" / "skills"
     assert (canonical / "skill-alpha" / "SKILL.md").read_text() == "---\nname: skill-alpha\n---\nA"
     assert (canonical / "skill-alpha" / "helper.txt").read_text() == "supporting file"
     assert (canonical / "skill-beta" / "SKILL.md").read_text() == "---\nname: skill-beta\n---\nB"
 
-    # Agent-native (claude → .claude/commands/agtx/<name>.md, flattened)
-    claude_dir = worktree_path / ".claude" / "commands" / "agtx"
+    # Agent-native (claude → .claude/commands/harbor/<name>.md, flattened)
+    claude_dir = worktree_path / ".claude" / "commands" / "harbor"
     assert (claude_dir / "skill-alpha.md").read_text() == "---\nname: skill-alpha\n---\nA"
     assert (claude_dir / "skill-beta.md").read_text() == "---\nname: skill-beta\n---\nB"
     # No helper.txt in the agent-native dir — only SKILL.md flattens.
@@ -1345,7 +1345,7 @@ def test_deploy_skills_codex_uses_codex_skill_dir(
 def test_deploy_skills_unknown_agent_still_writes_canonical(
     memdb: AgtxDb, fake_tmux: MagicMock, tmp_path: Path,
 ):
-    """task.agent='something-novel' → canonical .agtx/skills/ still written;
+    """task.agent='something-novel' → canonical .harbor/skills/ still written;
     agent-native deployment skipped silently."""
     from harbor.plugin_loader import WorkflowPlugin
 
@@ -1373,7 +1373,7 @@ def test_deploy_skills_unknown_agent_still_writes_canonical(
     ).process_once()
 
     # Canonical present
-    assert (worktree_path / ".agtx" / "skills" / "x" / "SKILL.md").read_text() == "X"
+    assert (worktree_path / ".harbor" / "skills" / "x" / "SKILL.md").read_text() == "X"
     # No agent-native subtree for an unknown agent
     assert not (worktree_path / ".claude").exists()
     assert not (worktree_path / ".codex").exists()
@@ -1400,7 +1400,7 @@ def test_deploy_skills_skipped_when_no_plugin(
         db=memdb, config=cfg, tmux=fake_tmux, git=MagicMock(), poll_interval=0.0,
     ).process_once()
 
-    assert not (worktree_path / ".agtx" / "skills").exists()
+    assert not (worktree_path / ".harbor" / "skills").exists()
     assert not (worktree_path / ".claude").exists()
 
 

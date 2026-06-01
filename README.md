@@ -2,13 +2,13 @@
 
 Harbor is two things in one repo:
 
-1. **A Python orchestrator** (`harbor/`) for running coding-agent sessions in tmux panes. Originally built to drive beads epics; today, the agent-per-task work is delegated to [agtx](https://github.com/fynnfluegge/agtx) and harbor's role is being refocused (webui dashboard for agtx tasks; tmux/psmux fallbacks; bead-coupled modules are deprecated, not yet removed).
+1. **A Python orchestrator** (`harbor/`) for running coding-agent sessions in tmux panes. Originally built to drive beads epics; today, the agent-per-task work is delegated to [agtx](https://github.com/fynnfluegge/agtx) and harbor's role is being refocused (webui dashboard for Harbor tasks; tmux/psmux fallbacks; bead-coupled modules are deprecated, not yet removed).
 
-2. **An agtx-style workflow template** (`skills/`, `scripts/`, `.agtx/`) for game-reverse work. brainstorm → sweep → one-agent-per-task, with **explicit per-task acceptance criteria** that the worker enforces via `build-and-test`. Designed for Windows + a working tmux build. Supports per-task game-RE runtime targeting (emulator, device, game window).
+2. **A Harbor-style workflow template** (`skills/`, `scripts/`, `.harbor/`) for game-reverse work. brainstorm → sweep → one-agent-per-task, with **explicit per-task acceptance criteria** that the worker enforces via `build-and-test`. Designed for Windows + a working tmux build. Supports per-task game-RE runtime targeting (emulator, device, game window).
 
-The two parts share one repo because harbor's webui is the natural future home for the agtx dashboard, and harbor's tmux orchestrator is the fallback for any flow agtx doesn't cover.
+The two parts share one repo because harbor's webui is the natural future home for the Harbor dashboard, and harbor's tmux orchestrator is the fallback for any flow agtx doesn't cover.
 
-## Quick Start (the agtx-style workflow)
+## Quick Start (the Harbor-style workflow)
 
 ```bash
 # 1. Install agtx and register its MCP server with your agent
@@ -21,29 +21,29 @@ python scripts/shared/target_runtime.py target set-device \
   --id=127.0.0.1:5555 --kind=adb \
   --probe-command="adb -s 127.0.0.1:5555 get-state"
 
-# 3. Brainstorm + sweep into agtx tasks (use the customized sweep)
-#    /agtx:brainstorm in your agent — explore freely, no code yet
-#    /agtx-sweep-with-acceptance — the worker, three questions per task
+# 3. Brainstorm + sweep into Harbor tasks (use the customized sweep)
+#    /harbor:brainstorm in your agent — explore freely, no code yet
+#    /harbor-sweep-with-acceptance — the worker, three questions per task
 
-# 4. Move a task forward in agtx; a worker agent picks it up in its own
-#    tmux window + git worktree. The worker uses agtx-task-worker → agtx-task-verify.
+# 4. Move a task forward in Harbor; a worker agent picks it up in its own
+#    tmux window + git worktree. The worker uses harbor-task-worker → harbor-task-verify.
 ```
 
 ## Workflow Skills
 
 | Skill | Purpose |
 |---|---|
-| `agtx-sweep-with-acceptance` | Fork of agtx-sweep that asks 3 numbered acceptance questions per task and embeds answers as `## Acceptance Criteria` / `## Verification Probes` / `## Runtime Target` headers in the task description. |
-| `agtx-task-worker` | Per-task worker for an agtx-spawned tmux session. Parses the three headers, does the work, hands off to verify. |
-| `agtx-task-verify` | Runs `## Verification Probes` via `target-runtime-exec` with hard-block on any failure. Writes failure summaries to `<worktree>/.agtx/execute.md`. |
-| `runtime-target-config` | Interactive setup for `.agtx/runtime-target.json` (mode + target.kind + emulator/device/game_window subobject + probe_command). |
-| `build-and-test` | Generic discovery-based test runner; ALSO reads task-scoped probes from the active agtx task description. |
+| `harbor-sweep-with-acceptance` | Sweep skill that asks 3 numbered acceptance questions per task and embeds answers as `## Acceptance Criteria` / `## Verification Probes` / `## Runtime Target` headers in the task description. |
+| `harbor-task-worker` | Per-task worker for a Harbor-spawned tmux session. Parses the three headers, does the work, hands off to verify. |
+| `harbor-task-verify` | Runs `## Verification Probes` via `target-runtime-exec` with hard-block on any failure. Writes failure summaries to `<worktree>/.harbor/execute.md`. |
+| `runtime-target-config` | Interactive setup for `.harbor/runtime-target.json` (mode + target.kind + emulator/device/game_window subobject + probe_command). |
+| `build-and-test` | Generic discovery-based test runner; ALSO reads task-scoped probes from the active Harbor task description. |
 | `target-runtime-exec` | Routes runtime-dependent commands through `scripts/shared/target_runtime.py` so `target.kind` and probes are honored. |
 | `brainstorming`, `verification-before-completion`, `systematic-debugging`, `writing-plans` | Carried over from the bead-era template; useful regardless of task tracker. |
 
 ## Runtime Target
 
-`.agtx/runtime-target.json` is the source of truth for "where commands run" and "what they target." Schema:
+`.harbor/runtime-target.json` is the source of truth for "where commands run" and "what they target." Schema:
 
 ```json
 {
@@ -57,9 +57,9 @@ python scripts/shared/target_runtime.py target set-device \
 }
 ```
 
-See `.agtx/runtime-target.example.json` for a fully-populated example targeting LDPlayer + Blue Archive (JP).
+See `.harbor/runtime-target.example.json` for a fully-populated example targeting LDPlayer + Blue Archive (JP).
 
-When `target.kind != local`, the worker runs the probe before any command and refuses to proceed if it fails. Workers can write a worktree-local `<worktree>/.agtx/runtime-target.json` to override per-task without touching the repo default.
+When `target.kind != local`, the worker runs the probe before any command and refuses to proceed if it fails. Workers can write a worktree-local `<worktree>/.harbor/runtime-target.json` to override per-task without touching the repo default.
 
 ## The Harbor Python Package
 
@@ -67,7 +67,7 @@ When `target.kind != local`, the worker runs the probe before any command and re
 
 - `beads.py`, `epic.py`, `runner.py`, `mail.py`, `finalize.py`
 
-These remain in the codebase but are not used by the agtx-style workflow. The non-deprecated pieces (tmux, state, prompt, agent, orchestrator core, verify, webui) are still useful and are the candidates for the agtx-dashboard rebuild.
+These remain in the codebase but are not used by the Harbor-style workflow. The non-deprecated pieces (tmux, state, prompt, agent, orchestrator core, verify, webui) are still useful and are the candidates for the Harbor dashboard rebuild.
 
 ## Prerequisites
 

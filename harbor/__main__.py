@@ -52,7 +52,7 @@ def cmd_run_epic(args: argparse.Namespace) -> int:
 
 def cmd_daemon(args: argparse.Namespace) -> int:
     """Legacy `daemon` subcommand — kept as an alias for `webui` so existing scripts
-    don't break. Both serve the same agtx webview now (the bead-coupled webui is gone).
+    don't break. Both serve the same Harbor webview now (the bead-coupled webui is gone).
     """
     return cmd_webui(args)
 
@@ -255,9 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(
             "--plugin", default=None,
             help="Workflow plugin to use for phase commands/prompts/auto-dismiss. "
-            "Pass a plugin NAME (searched in <repo>/plugins/, .agtx/plugins/, "
-            "~/.config/agtx/plugins/) or a direct PATH to plugin.toml. Overrides "
-            "harbor.yml's `agtx.plugin` key.",
+            "Pass a plugin NAME (searched in <repo>/plugins/, .harbor/plugins/, "
+            "~/.config/harbor/plugins/) or a direct PATH to plugin.toml. Overrides "
+            "harbor.yml's `harbor.plugin` key.",
         )
         parser.add_argument(
             "--base-branch", default="main",
@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
             "forward transition.",
         )
 
-    w = sub.add_parser("webui", help="Run the agtx kanban webview at http://127.0.0.1:8765/.")
+    w = sub.add_parser("webui", help="Run the Harbor kanban webview at http://127.0.0.1:8765/.")
     _add_webui_args(w)
     w.set_defaults(func=cmd_webui)
 
