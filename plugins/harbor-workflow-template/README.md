@@ -71,7 +71,7 @@ python -m harbor webui --project-path .
 
 You also need to:
 1. Make sure `harbor` is installed (`pip install -e <path-to-harbor>`).
-2. Have agtx registered and the project initialized (`agtx trust && agtx`).
+2. Register Harbor's MCP server with your agent (`claude mcp add harbor -- python -m harbor mcp-serve`).
 3. Have a working tmux on PATH (Windows: `arndawg.tmux-windows` — see `docs/WINDOWS_TMUX.md` in harbor).
 
 ## How harbor uses the plugin
@@ -85,7 +85,7 @@ When you click **Move forward** in harbor's webview, the `TransitionWorker`:
 5. Persists the new task status.
 6. Polls `plugin.artifacts.<phase>` (e.g. `.harbor/plan.md`) to detect completion (UI hint only in v1).
 
-agtx's TUI on Mac/Linux uses the same `plugin.toml` schema, so this bundle works there too — drop it under `~/.config/agtx/plugins/harbor-workflow-template/` or `<repo>/.harbor/plugins/harbor-workflow-template/` and set the workflow plugin in agtx's config.
+Harbor uses the same `plugin.toml` schema as the predecessor runtime, so existing workflow plugins can be moved under `~/.config/harbor/plugins/harbor-workflow-template/` or `<repo>/.harbor/plugins/harbor-workflow-template/` and referenced from `harbor.yml`.
 
 ## Schema reference
 

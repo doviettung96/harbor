@@ -43,6 +43,10 @@ class Finding:
 
 
 TEXT_RULES: tuple[tuple[str, str | re.Pattern[str]], ...] = (
+    ("legacy MCP registration command", "agtx mcp-serve"),
+    ("legacy MCP registration target", "mcp add " + "agtx"),
+    ("legacy runtime bootstrap command", "agtx trust && " + "agtx"),
+    ("legacy project initialization wording", "Have " + "agtx" + " registered"),
     ("mcp tool namespace", "mcp__" + "agtx__"),
     ("dot workflow path slash", "." + "agtx/"),
     ("dot workflow path backslash", "." + "agtx" + "\\"),

@@ -31,20 +31,19 @@ python -m venv .venv
 python -m pip install -e .
 ```
 
-## agtx
+## Harbor MCP
 
-Install agtx from its README. Once installed, register the MCP server with your agent:
+Register Harbor's MCP server with your agent after the editable install:
 
 ```powershell
-claude mcp add agtx -- agtx mcp-serve
+claude mcp add harbor -- python -m harbor mcp-serve
 ```
 
-Then trust this repo with harbor:
+Then start Harbor's webui when you want the Windows-friendly board and transition worker:
 
 ```powershell
 cd D:\Projects\harbor
-agtx trust
-agtx
+python -m harbor webui --project-path .
 ```
 
 ## ADB / emulators (game-RE work only)
