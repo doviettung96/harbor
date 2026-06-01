@@ -62,7 +62,7 @@ class HarborMcpService:
 
     def _project_db(self, project_id: str | None) -> tuple[Project, AgtxDb]:
         project = self._project(project_id)
-        db_path = ac.agtx_config_dir() / "projects" / f"{ac.hash_project_path(project.path)}.db"
+        db_path = ac.harbor_data_dir() / "projects" / f"{ac.hash_project_path(project.path)}.db"
         return project, AgtxDb(project_db_p=db_path, global_db_p=ac.global_db_path())
 
     # ---- Response mapping ----------------------------------------------

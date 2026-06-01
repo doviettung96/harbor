@@ -551,10 +551,11 @@ def test_done_view_renders_pr_url_and_cleanup_button(app_client):
 
 
 def test_project_init_registers_project_from_ui(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "new-project"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
 
     app = create_app(
         tmp_path,
@@ -586,8 +587,9 @@ def test_project_init_registers_project_from_ui(tmp_path: Path, monkeypatch):
 
 
 def test_project_init_rejects_missing_path(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    fake_config = tmp_path / "harbor-config"
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -605,11 +607,12 @@ def test_project_init_rejects_missing_path(tmp_path: Path, monkeypatch):
 
 
 def test_project_folder_browser_lists_and_tracks_folder(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     root = tmp_path / "root"
     child = root / "child-project"
     child.mkdir(parents=True)
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -642,10 +645,11 @@ def test_project_init_pick_folder_registers_selected_folder(
     tmp_path: Path,
     monkeypatch,
 ):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "picked-project"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -670,10 +674,11 @@ def test_project_init_pick_folder_get_registers_selected_folder(
     tmp_path: Path,
     monkeypatch,
 ):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "picked-by-url"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -695,8 +700,9 @@ def test_project_init_pick_folder_get_registers_selected_folder(
 
 
 def test_project_init_pick_folder_cancel_is_noop(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    fake_config = tmp_path / "harbor-config"
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,

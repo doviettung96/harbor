@@ -127,13 +127,15 @@ def cmd_webui_diagnose(args: argparse.Namespace) -> int:
         agtx_config_dir,
         global_db_path,
         hash_project_path,
+        harbor_data_dir,
         list_registered_projects,
         project_db_path,
         resolve_project_db_path,
     )
 
     project_path = Path(args.project_path or Path.cwd()).resolve()
-    print(f"agtx config dir:    {agtx_config_dir()}")
+    print(f"harbor data dir:    {harbor_data_dir()}")
+    print(f"legacy agtx dir:    {agtx_config_dir()}")
     print(f"global index.db:    {global_db_path()} {'(exists)' if global_db_path().exists() else '(missing)'}")
     print()
     print(f"Project path:       {project_path}")
@@ -150,12 +152,12 @@ def cmd_webui_diagnose(args: argparse.Namespace) -> int:
     print()
     registered = list_registered_projects()
     if registered:
-        print(f"Projects in agtx index.db ({len(registered)}):")
+        print(f"Projects in Harbor index.db ({len(registered)}):")
         for name, path in registered:
             mark = "<-- this project" if path == canonical else ""
             print(f"  - {name:30} {path}  {mark}")
     else:
-        print("No projects registered in agtx's index.db.")
+        print("No projects registered in Harbor's index.db.")
     return 0
 
 
@@ -208,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(
             "--project-path",
             default=None,
-            help="Initial project to select. The project tree still comes from agtx's global index.",
+            help="Initial project to select. The project tree comes from Harbor's global index.",
         )
         parser.add_argument(
             "--agent-command",
@@ -296,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     diag = sub.add_parser(
         "webui-diagnose",
-        help="Print the resolved agtx DB path and registered projects (for debugging "
+        help="Print the resolved Harbor DB path and registered projects (for debugging "
         "'no such table: transition_requests' errors).",
     )
     diag.add_argument("--project-path", default=None, help="Project path (default: cwd).")

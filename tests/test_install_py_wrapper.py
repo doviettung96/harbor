@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,10 +10,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALL_PY = REPO_ROOT / "plugins" / "agtx-workflow-template" / "install.py"
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def _run(*args: str, appdata: Path | None = None) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if appdata is not None:
+        env["APPDATA"] = str(appdata)
     return subprocess.run(
         [sys.executable, *args],
         cwd=REPO_ROOT,
+        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -42,7 +47,10 @@ def test_install_py_default_matches_harbor_bootstrap_apply(tmp_path: Path):
     via_bootstrap.mkdir()
     via_install_py.mkdir()
 
-    bootstrap = _run("-m", "harbor.bootstrap", "--apply", str(via_bootstrap))
+    bootstrap = _run(
+        "-m", "harbor.bootstrap", "--apply", str(via_bootstrap),
+        appdata=tmp_path / "appdata-bootstrap",
+    )
     install_py = _run(str(INSTALL_PY), str(via_install_py))
 
     assert bootstrap.returncode == 0, bootstrap.stderr
