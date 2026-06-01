@@ -612,6 +612,14 @@ class AgtxDb:
         ).fetchall()
         return [_tr_from_row(r) for r in rows]
 
+    def get_transition_request(self, req_id: str) -> TransitionRequest | None:
+        conn = self._connect_project()
+        row = conn.execute(
+            "SELECT * FROM transition_requests WHERE id = ?",
+            (req_id,),
+        ).fetchone()
+        return _tr_from_row(row) if row is not None else None
+
     def create_transition_request(
         self, *, task_id: str, action: str, reason: str | None = None
     ) -> str:
@@ -674,6 +682,25 @@ class AgtxDb:
             Notification(id=r["id"], message=r["message"], created_at=r["created_at"])
             for r in rows
         ]
+
+    def consume_notifications(self, *, limit: int = 20) -> list[Notification]:
+        """Return and remove pending notifications.
+
+        agtx's MCP endpoint is polling-only: callers ask for notifications and
+        consumed rows disappear from the queue.
+        """
+        conn = self._connect_project()
+        notifications = self.list_notifications(limit=limit)
+        if notifications:
+            conn.execute(
+                f"DELETE FROM notifications WHERE id IN ({','.join('?' for _ in notifications)})",
+                [n.id for n in notifications],
+            )
+        return notifications
+
+    def delete_task(self, task_id: str) -> None:
+        conn = self._connect_project()
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
 
     # ---- Projects (global index.db) ----
 
