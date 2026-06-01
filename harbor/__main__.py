@@ -159,6 +159,13 @@ def cmd_webui_diagnose(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    from .mcp_server import run_stdio
+
+    run_stdio()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="harbor",
@@ -294,6 +301,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     diag.add_argument("--project-path", default=None, help="Project path (default: cwd).")
     diag.set_defaults(func=cmd_webui_diagnose)
+
+    mcp = sub.add_parser("mcp-serve", help="Run Harbor's MCP server over stdio.")
+    mcp.set_defaults(func=cmd_mcp_serve)
 
     return p
 
