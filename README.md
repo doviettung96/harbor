@@ -2,18 +2,18 @@
 
 Harbor is two things in one repo:
 
-1. **A Python orchestrator** (`harbor/`) for running coding-agent sessions in tmux panes. Originally built to drive beads epics; today, the agent-per-task work is delegated to [agtx](https://github.com/fynnfluegge/agtx) and harbor's role is being refocused (webui dashboard for Harbor tasks; tmux/psmux fallbacks; bead-coupled modules are deprecated, not yet removed).
+1. **A Python orchestrator** (`harbor/`) for running coding-agent sessions in tmux panes. Originally built to drive beads epics; today, Harbor owns the task board, MCP server, webui dashboard, tmux/worktree transitions, and runtime data store. Bead-coupled modules are deprecated, not yet removed.
 
 2. **A Harbor-style workflow template** (`skills/`, `scripts/`, `.harbor/`) for game-reverse work. brainstorm → sweep → one-agent-per-task, with **explicit per-task acceptance criteria** that the worker enforces via `build-and-test`. Designed for Windows + a working tmux build. Supports per-task game-RE runtime targeting (emulator, device, game window).
 
-The two parts share one repo because harbor's webui is the natural future home for the Harbor dashboard, and harbor's tmux orchestrator is the fallback for any flow agtx doesn't cover.
+The two parts share one repo because harbor's webui, MCP server, and tmux orchestrator are the runtime for the Harbor task workflow.
 
 ## Quick Start (the Harbor-style workflow)
 
 ```bash
-# 1. Install agtx and register its MCP server with your agent
-agtx trust && agtx
-claude mcp add agtx -- agtx mcp-serve
+# 1. Install Harbor and register its MCP server with your agent
+python -m pip install -e .
+claude mcp add harbor -- python -m harbor mcp-serve
 
 # 2. Configure this repo's runtime target (only needed for non-local targets)
 python scripts/shared/target_runtime.py status
@@ -73,7 +73,6 @@ These remain in the codebase but are not used by the Harbor-style workflow. The 
 
 - Python 3.10+
 - A working `tmux` on PATH (Windows: install a working build — psmux is no longer recommended; the original psmux notes are in `docs/WINDOWS_TMUX.md` for historical reference)
-- `agtx` installed and trusted in this repo
 - An agent CLI (`codex`, `claude`)
 
 ## Install
@@ -87,4 +86,4 @@ This exposes the `harbor` and `harbor-bead-runner` entry points. `harbor-bead-ru
 ## Status
 
 - Workflow template: in active development.
-- Harbor python package: stable on the non-bead modules; bead-coupled modules slated for removal once the agtx integration is verified end-to-end.
+- Harbor python package: stable on the non-bead modules; bead-coupled modules slated for removal after the Harbor-only task workflow is fully exercised.
