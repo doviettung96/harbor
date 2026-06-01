@@ -1,18 +1,23 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-INSTALL_PY = REPO_ROOT / "plugins" / "agtx-workflow-template" / "install.py"
+INSTALL_PY = REPO_ROOT / "plugins" / "harbor-workflow-template" / "install.py"
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def _run(*args: str, appdata: Path | None = None) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    if appdata is not None:
+        env["APPDATA"] = str(appdata)
     return subprocess.run(
         [sys.executable, *args],
         cwd=REPO_ROOT,
+        env=env,
         text=True,
         capture_output=True,
         check=False,
@@ -42,7 +47,10 @@ def test_install_py_default_matches_harbor_bootstrap_apply(tmp_path: Path):
     via_bootstrap.mkdir()
     via_install_py.mkdir()
 
-    bootstrap = _run("-m", "harbor.bootstrap", "--apply", str(via_bootstrap))
+    bootstrap = _run(
+        "-m", "harbor.bootstrap", "--apply", str(via_bootstrap),
+        appdata=tmp_path / "appdata-bootstrap",
+    )
     install_py = _run(str(INSTALL_PY), str(via_install_py))
 
     assert bootstrap.returncode == 0, bootstrap.stderr
@@ -69,18 +77,18 @@ def test_install_py_skip_skills_keeps_only_plugin_bundled_skills(tmp_path: Path)
     for name in _skill_names():
         assert (
             project
-            / ".agtx"
+            / ".harbor"
             / "plugins"
-            / "agtx-workflow-template"
+            / "harbor-workflow-template"
             / "skills"
             / name
             / "SKILL.md"
         ).is_file()
         assert not (project / ".claude" / "skills" / name / "SKILL.md").exists()
         assert not (project / ".codex" / "skills" / f"{name}.md").exists()
-        assert not (project / ".agtx" / "skills" / name / "SKILL.md").exists()
+        assert not (project / ".harbor" / "skills" / name / "SKILL.md").exists()
     assert (project / "harbor.yml").is_file()
-    assert (project / ".agtx" / "runtime-target.json").is_file()
+    assert (project / ".harbor" / "runtime-target.json").is_file()
 
 
 def test_install_py_skip_harbor_yml_leaves_harbor_yml_absent(tmp_path: Path):
@@ -91,7 +99,7 @@ def test_install_py_skip_harbor_yml_leaves_harbor_yml_absent(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     assert not (project / "harbor.yml").exists()
-    assert (project / ".agtx" / "runtime-target.json").is_file()
+    assert (project / ".harbor" / "runtime-target.json").is_file()
 
 
 def test_install_py_agent_flag_limits_agent_native_skill_deploy(tmp_path: Path):
@@ -104,7 +112,7 @@ def test_install_py_agent_flag_limits_agent_native_skill_deploy(tmp_path: Path):
     for name in _skill_names():
         assert not (project / ".claude" / "skills" / name / "SKILL.md").exists()
         assert (project / ".codex" / "skills" / f"{name}.md").is_file()
-        assert (project / ".agtx" / "skills" / name / "SKILL.md").is_file()
+        assert (project / ".harbor" / "skills" / name / "SKILL.md").is_file()
 
 
 def test_install_py_agent_flag_supports_legacy_agent_names(tmp_path: Path):
@@ -115,15 +123,15 @@ def test_install_py_agent_flag_supports_legacy_agent_names(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     for name in _skill_names():
-        assert (project / ".gemini" / "commands" / "agtx" / f"{name}.md").is_file()
+        assert (project / ".gemini" / "commands" / "harbor" / f"{name}.md").is_file()
         assert not (project / ".codex" / "skills" / f"{name}.md").exists()
-        assert (project / ".agtx" / "skills" / name / "SKILL.md").is_file()
+        assert (project / ".harbor" / "skills" / name / "SKILL.md").is_file()
 
 
 def test_install_py_force_flag_is_accepted_and_rewrites_changed_files(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
-    manifest = project / ".agtx" / "plugins" / "agtx-workflow-template" / "plugin.toml"
+    manifest = project / ".harbor" / "plugins" / "harbor-workflow-template" / "plugin.toml"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("stale = true\n", encoding="utf-8")
 
@@ -131,5 +139,5 @@ def test_install_py_force_flag_is_accepted_and_rewrites_changed_files(tmp_path: 
 
     assert result.returncode == 0, result.stderr
     assert manifest.read_bytes() == (
-        REPO_ROOT / "plugins" / "agtx-workflow-template" / "plugin.toml"
+        REPO_ROOT / "plugins" / "harbor-workflow-template" / "plugin.toml"
     ).read_bytes()

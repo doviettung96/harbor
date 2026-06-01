@@ -1,4 +1,4 @@
-"""Install the agtx workflow template into a target project."""
+"""Install the Harbor workflow template into a target project."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from harbor.bootstrap import AGENT_SKILL_LAYOUTS, apply_bootstrap  # noqa: E402
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Install the agtx-workflow-template plugin into a target project.",
+        description="Install the harbor-workflow-template plugin into a target project.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -26,8 +26,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--global",
         dest="global_install",
         action="store_true",
-        help="Install plugin globally at ~/.config/agtx/plugins/<name>/ "
-        "instead of project-local at <target>/.agtx/plugins/<name>/.",
+        help="Install plugin globally at ~/.config/harbor/plugins/<name>/ "
+        "instead of project-local at <target>/.harbor/plugins/<name>/.",
     )
     parser.add_argument(
         "--agent",
@@ -52,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-runtime-target",
         action="store_true",
-        help="Don't write .agtx/runtime-target.json.",
+        help="Don't write .harbor/runtime-target.json.",
     )
     parser.add_argument(
         "--force",

@@ -4,4 +4,7 @@ __pycache__/
 *.pyc
 harbor.yml
 .harbor/
+.harbor/plan.md
+[.]agtx/plan.md
+[.]agtx/shared-instructions.md
 .worktrees/

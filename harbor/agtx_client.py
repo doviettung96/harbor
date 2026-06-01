@@ -1,25 +1,27 @@
-"""SQLite client for agtx's per-project task database.
+"""SQLite client for Harbor's per-project task database.
 
-agtx (https://github.com/fynnfluegge/agtx) stores each project's kanban state in
-a SQLite file under its config directory. The webui needs to read and mutate
-that file directly because, on Windows, the agtx ratatui TUI — which is the
-process that normally executes transition_requests side effects — is unusable.
+Harbor stores each project's kanban state in a SQLite file under its own config
+directory. Older installs borrowed agtx's config directory; startup migration
+copies that legacy data into Harbor's data dir and leaves the agtx source files
+untouched.
 
-The path layout (mirrored from `D:/Projects/agtx/src/db/schema.rs`):
-- Config dir: resolved via the same rules as Rust's `directories::ProjectDirs::from("","","agtx")`.
+The path layout:
+- Config dir: `%APPDATA%\\harbor\\config` on Windows,
+  `~/Library/Application Support/harbor` on macOS, and
+  `$XDG_CONFIG_HOME/harbor` or `~/.config/harbor` on Linux.
 - Per-project DB: `<config_dir>/projects/<sha256_8>.db`, where `<sha256_8>` is
   the first 8 bytes of SHA-256(project_path_str) rendered as 16 hex chars.
-- Global index DB: `<config_dir>/index.db` — holds the `projects` and
+- Global index DB: `<config_dir>/index.db` holds the `projects` and
   `running_agents` tables.
 
-The schema is whatever agtx wrote (we do NOT call CREATE TABLE; agtx owns
-migration). We only read documented columns and write back the small set
-listed in `ALLOWED_TASK_UPDATE_COLUMNS`.
+Harbor owns the schema in this module. We only update task columns listed in
+`ALLOWED_TASK_UPDATE_COLUMNS`.
 """
 from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import sqlite3
 import sys
 import uuid
@@ -54,7 +56,7 @@ VALID_STATUSES = ("backlog", "planning", "running", "review", "done")
 
 
 def agtx_config_dir() -> Path:
-    """Return the agtx config directory for the current OS.
+    """Return the legacy agtx config directory for migration source reads.
 
     Mirrors `directories::ProjectDirs::from("","","agtx").config_dir()`:
       - Windows: `%APPDATA%\\agtx\\config`
@@ -72,6 +74,19 @@ def agtx_config_dir() -> Path:
     return base / "agtx"
 
 
+def harbor_data_dir() -> Path:
+    """Return Harbor's owned data directory."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        base = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+        return base / "harbor" / "config"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "harbor"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else Path.home() / ".config"
+    return base / "harbor"
+
+
 def hash_project_path(project_path_str: str) -> str:
     """Re-implement agtx's `hash_path`: SHA-256 truncated to first 8 bytes, hex.
 
@@ -86,16 +101,17 @@ def hash_project_path(project_path_str: str) -> str:
 
 
 def project_db_path(project_path: str | Path) -> Path:
-    """Path to agtx's SQLite for `project_path` using the literal string supplied.
+    """Path to Harbor's SQLite for `project_path` using the literal string supplied.
 
-    Note: this does NOT consult agtx's global index.db. On Windows agtx
-    canonicalizes paths through Rust's `std::fs::canonicalize`, which returns
+    Note: this does NOT consult Harbor's global index.db. On Windows the
+    original agtx path canonicalization used Rust's `std::fs::canonicalize`,
+    which returns
     a `\\\\?\\` extended-length form — so the literal hash often won't match
-    what agtx actually wrote. Use `resolve_project_db_path()` instead for the
+    what the stored project row uses. Use `resolve_project_db_path()` instead for the
     end-to-end lookup; this function is kept for tests and as a fallback.
     """
     s = str(project_path) if isinstance(project_path, str) else str(project_path)
-    return agtx_config_dir() / "projects" / f"{hash_project_path(s)}.db"
+    return harbor_data_dir() / "projects" / f"{hash_project_path(s)}.db"
 
 
 def _windows_path_variants(p: Path) -> list[str]:
@@ -133,21 +149,20 @@ def _windows_path_variants(p: Path) -> list[str]:
 
 
 def resolve_project_db_path(project_path: str | Path) -> tuple[Path, str | None]:
-    """Find the per-project SQLite agtx actually uses for `project_path`.
+    """Find the per-project SQLite Harbor uses for `project_path`.
 
     Strategy:
-      1. Look up agtx's global `index.db` `projects` table for any row whose
+      1. Look up Harbor's global `index.db` `projects` table for any row whose
          `path` matches `project_path` (or one of its common Windows variants).
-         If found, use the *stored* path string for hashing — that's the byte
-         string agtx itself hashed.
+         If found, use the *stored* path string for hashing.
       2. Otherwise fall back to hashing the input path verbatim.
 
     Returns (db_path, canonical_path_str_or_None). If `canonical_path_str` is
-    None, the project is NOT registered in agtx's global index — caller may
+    None, the project is NOT registered in Harbor's global index — caller may
     want to surface that to the user.
     """
     # Keep the literal input string for the fallback hash so behavior is
-    # predictable when the project isn't in agtx's index. We still construct
+    # predictable when the project isn't in Harbor's index. We still construct
     # a Path for the variant generator.
     input_str = str(project_path)
     input_path_obj = project_path if isinstance(project_path, Path) else Path(input_str)
@@ -171,7 +186,7 @@ def resolve_project_db_path(project_path: str | Path) -> tuple[Path, str | None]
                 if stored in candidate_set or (
                     sys.platform == "win32" and stored.casefold() in candidate_folded
                 ):
-                    return agtx_config_dir() / "projects" / f"{hash_project_path(stored)}.db", stored
+                    return harbor_data_dir() / "projects" / f"{hash_project_path(stored)}.db", stored
         except sqlite3.Error:
             pass
 
@@ -182,7 +197,7 @@ def resolve_project_db_path(project_path: str | Path) -> tuple[Path, str | None]
 
 
 def list_registered_projects() -> list[tuple[str, str]]:
-    """Return [(name, path), ...] from agtx's global index.db. Empty if absent."""
+    """Return [(name, path), ...] from Harbor's global index.db. Empty if absent."""
     gdb = global_db_path()
     if not gdb.exists():
         return []
@@ -199,8 +214,8 @@ def list_registered_projects() -> list[tuple[str, str]]:
 
 
 def global_db_path() -> Path:
-    """Path to agtx's global index.db (projects + running_agents)."""
-    return agtx_config_dir() / "index.db"
+    """Path to Harbor's global index.db (projects + running_agents)."""
+    return harbor_data_dir() / "index.db"
 
 
 def canonical_project_path_str(project_path: str | Path) -> str:
@@ -233,7 +248,166 @@ def strip_extended_length_prefix(path: str | Path) -> Path:
     return Path(s)
 
 
-# ---- Dataclasses (mirror D:/Projects/agtx/src/db/models.rs) ---------------
+# ---- Migration ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class MigrationReport:
+    """Summary of a legacy agtx -> Harbor data migration run."""
+
+    copied_global_db: bool = False
+    copied_project_dbs: tuple[str, ...] = ()
+    rehashed_project_dbs: tuple[str, ...] = ()
+    renamed_project_dirs: tuple[str, ...] = ()
+    hash_stable: bool | None = None
+    hash_notes: tuple[str, ...] = ()
+
+    @property
+    def operations(self) -> tuple[str, ...]:
+        ops: list[str] = []
+        if self.copied_global_db:
+            ops.append("copied index.db")
+        ops.extend(f"copied projects/{name}" for name in self.copied_project_dbs)
+        ops.extend(f"rehashed projects/{name}" for name in self.rehashed_project_dbs)
+        ops.extend(f"renamed {path}" for path in self.renamed_project_dirs)
+        return tuple(ops)
+
+    @property
+    def empty(self) -> bool:
+        return not self.operations
+
+
+def ensure_harbor_data_migrated() -> MigrationReport:
+    """Copy legacy agtx data into Harbor's data dir once.
+
+    The agtx config directory is treated as read-only. Existing Harbor data wins:
+    once Harbor has an `index.db`, later launches are no-ops.
+    """
+    source = agtx_config_dir()
+    dest = harbor_data_dir()
+    source_index = source / "index.db"
+    dest_index = dest / "index.db"
+    if dest_index.exists() or not source_index.exists():
+        return MigrationReport()
+
+    dest_projects = dest / "projects"
+    dest_projects.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_index, dest_index)
+    copied_global_db = True
+
+    copied_project_dbs: list[str] = []
+    source_projects = source / "projects"
+    if source_projects.is_dir():
+        for source_db in sorted(source_projects.glob("*.db"), key=lambda p: p.name):
+            dest_db = dest_projects / source_db.name
+            if not dest_db.exists():
+                shutil.copy2(source_db, dest_db)
+                copied_project_dbs.append(source_db.name)
+
+    project_paths = _read_project_paths(dest_index)
+    rehashed_project_dbs, hash_notes = _ensure_project_db_hashes(
+        project_paths,
+        source_projects=source_projects,
+        dest_projects=dest_projects,
+    )
+    renamed_project_dirs = _rename_project_metadata_dirs(project_paths)
+
+    return MigrationReport(
+        copied_global_db=copied_global_db,
+        copied_project_dbs=tuple(copied_project_dbs),
+        rehashed_project_dbs=tuple(rehashed_project_dbs),
+        renamed_project_dirs=tuple(renamed_project_dirs),
+        hash_stable=(
+            all(": stable " in note for note in hash_notes)
+            if hash_notes else None
+        ),
+        hash_notes=tuple(hash_notes),
+    )
+
+
+def _read_project_paths(index_db: Path) -> tuple[str, ...]:
+    if not index_db.exists():
+        return ()
+    try:
+        conn = sqlite3.connect(str(index_db), timeout=5.0)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute("SELECT path FROM projects ORDER BY name").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return ()
+    return tuple(str(row["path"]) for row in rows)
+
+
+def _ensure_project_db_hashes(
+    project_paths: Iterable[str],
+    *,
+    source_projects: Path,
+    dest_projects: Path,
+) -> tuple[list[str], list[str]]:
+    rehashed: list[str] = []
+    notes: list[str] = []
+    for project_path in project_paths:
+        expected_name = f"{hash_project_path(project_path)}.db"
+        expected_dest = dest_projects / expected_name
+        if expected_dest.exists():
+            notes.append(f"{project_path}: stable {expected_name}")
+            continue
+
+        candidate_names = _legacy_metadata_hash_candidates(project_path)
+        source_candidate = next(
+            (
+                source_projects / name
+                for name in candidate_names
+                if (source_projects / name).exists()
+            ),
+            None,
+        )
+        if source_candidate is None:
+            notes.append(f"{project_path}: missing expected {expected_name}")
+            continue
+
+        shutil.copy2(source_candidate, expected_dest)
+        rehashed.append(expected_name)
+        notes.append(
+            f"{project_path}: rehashed {source_candidate.name} to {expected_name}"
+        )
+    return rehashed, notes
+
+
+def _legacy_metadata_hash_candidates(project_path: str) -> tuple[str, ...]:
+    base = strip_extended_length_prefix(project_path)
+    candidates = [
+        str(base / ".agtx"),
+        str(base / ".harbor"),
+        str(Path(project_path) / ".agtx"),
+        str(Path(project_path) / ".harbor"),
+    ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        name = f"{hash_project_path(candidate)}.db"
+        if name not in seen:
+            seen.add(name)
+            out.append(name)
+    return tuple(out)
+
+
+def _rename_project_metadata_dirs(project_paths: Iterable[str]) -> list[str]:
+    renamed: list[str] = []
+    for project_path in project_paths:
+        root = strip_extended_length_prefix(project_path)
+        old = root / ".agtx"
+        new = root / ".harbor"
+        if not old.is_dir() or new.exists():
+            continue
+        old.rename(new)
+        renamed.append(str(new))
+    return renamed
+
+
+# ---- Dataclasses ----------------------------------------------------------
 
 
 @dataclass
@@ -354,20 +528,20 @@ class AgtxDb:
         # explain the situation to the user.
         if not self.project_db_p.exists():
             raise FileNotFoundError(
-                f"agtx project DB does not exist: {self.project_db_p}. "
-                "agtx has not been opened on this project yet, or the project path "
-                "doesn't match what agtx registered. Run `python -m harbor webui-diagnose` "
+                f"Harbor project DB does not exist: {self.project_db_p}. "
+                "Harbor has not initialized this project yet, or the project path "
+                "doesn't match what Harbor registered. Run `python -m harbor webui-diagnose` "
                 "for available projects."
             )
         conn = sqlite3.connect(str(self.project_db_p), timeout=5.0, isolation_level=None)
         conn.row_factory = sqlite3.Row
-        # Don't run CREATE TABLE — agtx owns the schema. Just set busy_timeout
-        # for safety; agtx already enables WAL via the file's pragma.
+        # Do not create missing DBs here. Callers that initialize projects go
+        # through _open_project_create(); read paths should fail if the file is absent.
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
     def is_initialized(self) -> bool:
-        """True iff the per-project DB exists AND has agtx's required tables.
+        """True iff the per-project DB exists AND has Harbor's required tables.
 
         Returns False instead of raising so the webui startup can render a
         helpful error page rather than crashing on import.
@@ -612,6 +786,14 @@ class AgtxDb:
         ).fetchall()
         return [_tr_from_row(r) for r in rows]
 
+    def get_transition_request(self, req_id: str) -> TransitionRequest | None:
+        conn = self._connect_project()
+        row = conn.execute(
+            "SELECT * FROM transition_requests WHERE id = ?",
+            (req_id,),
+        ).fetchone()
+        return _tr_from_row(row) if row is not None else None
+
     def create_transition_request(
         self, *, task_id: str, action: str, reason: str | None = None
     ) -> str:
@@ -675,6 +857,25 @@ class AgtxDb:
             for r in rows
         ]
 
+    def consume_notifications(self, *, limit: int = 20) -> list[Notification]:
+        """Return and remove pending notifications.
+
+        agtx's MCP endpoint is polling-only: callers ask for notifications and
+        consumed rows disappear from the queue.
+        """
+        conn = self._connect_project()
+        notifications = self.list_notifications(limit=limit)
+        if notifications:
+            conn.execute(
+                f"DELETE FROM notifications WHERE id IN ({','.join('?' for _ in notifications)})",
+                [n.id for n in notifications],
+            )
+        return notifications
+
+    def delete_task(self, task_id: str) -> None:
+        conn = self._connect_project()
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
     # ---- Projects (global index.db) ----
 
     def list_projects(self) -> list[Project]:
@@ -703,7 +904,7 @@ class AgtxDb:
         github_url: str | None = None,
         default_agent: str | None = None,
     ) -> Project:
-        """Register a project in agtx's global index and initialize its DB.
+        """Register a project in Harbor's global index and initialize its DB.
 
         Mirrors the TUI startup path: canonicalize the project path, upsert the
         global project row, then create/migrate the central per-project DB.
@@ -740,7 +941,7 @@ class AgtxDb:
         finally:
             conn.close()
 
-        db_path = agtx_config_dir() / "projects" / f"{hash_project_path(stored_path)}.db"
+        db_path = harbor_data_dir() / "projects" / f"{hash_project_path(stored_path)}.db"
         project_conn = self._open_project_create(db_path)
         project_conn.close()
         return Project(
@@ -765,7 +966,7 @@ def _coerce_int(v: Any) -> int | None:
 def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
     """sqlite3.Row.__getitem__ raises IndexError if column missing.
 
-    agtx's schema has migration ALTERs — older DBs may not have all columns yet.
+    Harbor's schema has migration ALTERs — older DBs may not have all columns yet.
     This wrapper tolerates that.
     """
     try:
@@ -823,9 +1024,7 @@ def _tr_from_row(row: sqlite3.Row) -> TransitionRequest:
 
 # ---- Schema bootstrap helper (test-only) ----------------------------------
 
-# Mirror of the agtx project schema, kept here ONLY so tests can build an
-# in-memory DB matching what the production agtx binary would have created.
-# We never run this against a real on-disk DB — agtx owns those.
+# Harbor-owned project schema. Tests also use it to build in-memory DBs.
 _PROJECT_SCHEMA_SQL = r"""
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -891,7 +1090,7 @@ CREATE TABLE IF NOT EXISTS running_agents (
 
 
 def init_test_db(conn: sqlite3.Connection, *, kind: str = "project") -> None:
-    """Apply agtx's schema to a fresh sqlite3 connection. Test use only."""
+    """Apply Harbor's schema to a fresh sqlite3 connection. Test use only."""
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")

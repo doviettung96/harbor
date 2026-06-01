@@ -133,7 +133,7 @@ def test_all_board_signals_apply_only_to_planning_running_review(all_client):
         session_name="live-session", escalation_note="old note",
     ))
     fake_tmux.capture_pane.side_effect = lambda session, *_args, **_kwargs: (
-        "agtx-verify task=t-sentinel probes=1 passed" if session == "sentinel-session" else ""
+        "harbor-verify task=t-sentinel probes=1 passed" if session == "sentinel-session" else ""
     )
 
     r = client.get("/all")

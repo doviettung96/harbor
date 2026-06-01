@@ -1,11 +1,11 @@
 ---
 name: runtime-target-config
-description: "Interactive setup for .agtx/runtime-target.json — chooses local/ssh mode and the game-RE target subobject (emulator, device, game window) plus a probe_command. Use when initializing a new repo, switching emulators, swapping target devices, or when target-runtime-exec reports a misconfiguration."
+description: "Interactive setup for .harbor/runtime-target.json — chooses local/ssh mode and the game-RE target subobject (emulator, device, game window) plus a probe_command. Use when initializing a new repo, switching emulators, swapping target devices, or when target-runtime-exec reports a misconfiguration."
 ---
 
 # Runtime Target Config
 
-Walk the user through configuring `.agtx/runtime-target.json` for this repo. The file declares two orthogonal axes:
+Walk the user through configuring `.harbor/runtime-target.json` for this repo. The file declares two orthogonal axes:
 
 - **Where to run** — `mode=local` (this machine) vs `mode=ssh` (remote host with workdir + sync strategy).
 - **What to target** — `target.kind` ∈ `{local, emulator, device, game_window}` plus the kind-specific subobject and a `probe_command`.
@@ -14,7 +14,7 @@ The probe command is the user-defined readiness check. It runs before every proj
 
 ## When to Use
 
-- Fresh repo: `.agtx/runtime-target.json` exists only as the default `{mode:local, target:{kind:local}}`.
+- Fresh repo: `.harbor/runtime-target.json` exists only as the default `{mode:local, target:{kind:local}}`.
 - Switching from one emulator/device to another.
 - Adding `probe_command` when a task's `## Worker Instructions` requires an emulator/device/window.
 - `target-runtime-exec` aborted with "probe_target.py failed" or "no probe_command set".
@@ -93,6 +93,6 @@ The probe command is the user-defined readiness check. It runs before every proj
 ## Hard Rules
 
 - Always set `probe_command` when `target.kind != local`. The worker refuses to run task probes if it cannot first verify the target is reachable.
-- Do not write to `.agtx/runtime-target.json` directly — use the `target_runtime.py` subcommands. Direct edits skip schema validation.
+- Do not write to `.harbor/runtime-target.json` directly — use the `target_runtime.py` subcommands. Direct edits skip schema validation.
 - `runtime-target.local.json` (worktree-local override, gitignored) is for per-task overrides written by the worker. Do NOT teach users to edit it manually.
 - If the user is on a fresh repo and skips this skill, the default `local`/`local` is fine — but any task whose `## Worker Instructions` require an emulator/device/game-window target will fail until the user runs this skill.

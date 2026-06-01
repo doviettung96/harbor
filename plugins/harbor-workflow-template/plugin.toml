@@ -1,7 +1,7 @@
-name = "agtx-workflow-template"
-description = "Game-RE oriented agtx workflow: per-task acceptance criteria, verification probes, and worker instructions parsed by agtx-task-worker, verified by agtx-task-verify."
+name = "harbor-workflow-template"
+description = "Game-RE oriented Harbor workflow: per-task acceptance criteria, verification probes, and worker instructions parsed by harbor-task-worker, verified by harbor-task-verify."
 
-# Keep the worker session alive across phases. The agtx-task-worker skill
+# Keep the worker session alive across phases. The harbor-task-worker skill
 # drives planning → running → review within one agent context (it reads the
 # task description headers and decides what to do per phase).
 clear_context_on_advance = false
@@ -11,28 +11,28 @@ supported_agents = ["claude", "codex"]
 
 # Files that signal "this phase is done" for agtx's TUI / harbor's worker.
 # These mirror AGENTS.md's contract: the worker writes plans/exec notes into
-# .agtx/ and the verifier writes the review summary alongside.
+# .harbor/ and the verifier writes the review summary alongside.
 [artifacts]
-planning = ".agtx/plan.md"
-running  = ".agtx/execute.md"
-review   = ".agtx/review.md"
+planning = ".harbor/plan.md"
+running  = ".harbor/execute.md"
+review   = ".harbor/review.md"
 
 # Slash commands the orchestrator types into the pane on each forward
-# transition. The {task_id} placeholder is the agtx task UUID; the worker
+# transition. The {task_id} placeholder is the Harbor task UUID; the worker
 # skill reads it (or $AGTX_TASK_ID) to fetch the task via MCP.
 [commands]
-planning = "/agtx-task-worker {task_id}"
-running  = "/agtx-task-worker {task_id}"
-review   = "/agtx-task-verify"
+planning = "/harbor-task-worker {task_id}"
+running  = "/harbor-task-worker {task_id}"
+review   = "/harbor-task-verify"
 
 # Free-text prompts sent AFTER the slash command. These reinforce phase
 # semantics for the worker skill (which decides what to do based on the
 # task's current status). Keep them short — the actual instructions live
-# in the skill markdown files at skills/agtx-task-worker/SKILL.md etc.
+# in the skill markdown files at skills/harbor-task-worker/SKILL.md etc.
 [prompts]
 planning = "Plan the work for task {task_id}. Read the task headers (Acceptance Criteria, Verification Probes, Worker Instructions). Do not implement yet — stop and wait for me to move the task to Running."
-running  = "Implement the work for task {task_id} per the plan. When done, run agtx-task-verify. If verify reports passed, call mcp__agtx__move_task(task_id=\"{task_id}\", action=\"move_forward\") yourself to advance the task to Review. If verify reports failed, fix the failure and re-run verify — never advance with failing probes."
-review   = "Run agtx-task-verify against the task's Verification Probes. Summarize what passed and any follow-ups. Do not advance the task — stop and wait for me to mark Done after I review the branch."
+running  = "Implement the work for task {task_id} per the plan. When done, run harbor-task-verify. If verify reports passed, call mcp__harbor__move_task(task_id=\"{task_id}\", action=\"move_forward\") yourself to advance the task to Review. If verify reports failed, fix the failure and re-run verify — never advance with failing probes."
+review   = "Run harbor-task-verify against the task's Verification Probes. Summarize what passed and any follow-ups. Do not advance the task — stop and wait for me to mark Done after I review the branch."
 
 # Patterns to detect "agent ready for input" in the pane content. When the
 # orchestrator sees one of these, it sends the prompt. (Harbor's worker also

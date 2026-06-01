@@ -1,4 +1,4 @@
-"""Bootstrap a project so Harbor can drive agtx-style task worktrees."""
+"""Bootstrap a project so Harbor can drive Harbor task worktrees."""
 
 from __future__ import annotations
 
@@ -15,18 +15,18 @@ import yaml
 from . import agtx_client
 
 
-PLUGIN_NAME = "agtx-workflow-template"
+PLUGIN_NAME = "harbor-workflow-template"
 CONFIGURE_RUNTIME_TITLE = "Configure runtime target"
 WORKER_SMOKE_TITLE = "Worker smoke test"
 
 
 AGENT_SKILL_LAYOUTS: dict[str, tuple[str, str, str, str]] = {
     "claude": (".claude/skills", "", "dir", "SKILL.md"),
-    "gemini": (".gemini/commands", "agtx", "file", ".md"),
+    "gemini": (".gemini/commands", "harbor", "file", ".md"),
     "opencode": (".opencode/command", "", "file", ".md"),
     "codex": (".codex/skills", "", "file", ".md"),
     "cursor": (".cursor/skills", "", "file", ".md"),
-    "copilot": (".github/agents", "agtx", "file", ".md"),
+    "copilot": (".github/agents", "harbor", "file", ".md"),
 }
 
 
@@ -39,10 +39,10 @@ RUNTIME_TARGET_LOCAL = {
 }
 
 
-CONFIGURE_RUNTIME_DESCRIPTION = """Point `.agtx/runtime-target.json` at the real runtime this repo should use: local, ssh, emulator, device, or game_window. Use `python scripts/shared/target_runtime.py target set-*` commands so the schema is validated.
+CONFIGURE_RUNTIME_DESCRIPTION = """Point `.harbor/runtime-target.json` at the real runtime this repo should use: local, ssh, emulator, device, or game_window. Use `python scripts/shared/target_runtime.py target set-*` commands so the schema is validated.
 
 ## Acceptance Criteria
-- `.agtx/runtime-target.json` reflects the target runtime the user chose.
+- `.harbor/runtime-target.json` reflects the target runtime the user chose.
 - `python scripts/shared/target_runtime.py target show` exits 0.
 - If the target is not local, the configured probe command proves the target is reachable.
 
@@ -50,7 +50,7 @@ CONFIGURE_RUNTIME_DESCRIPTION = """Point `.agtx/runtime-target.json` at the real
 - python scripts/shared/target_runtime.py target show
 
 ## Worker Instructions
-Ask the user which runtime target to configure before changing `.agtx/runtime-target.json`; do not guess emulator, device, SSH, or game-window details.
+Ask the user which runtime target to configure before changing `.harbor/runtime-target.json`; do not guess emulator, device, SSH, or game-window details.
 
 ## Run Repo Defaults
 no
@@ -147,7 +147,7 @@ def build_plan(
     plugin_dest = (
         _global_plugin_root() / PLUGIN_NAME
         if global_plugin
-        else project_path / ".agtx" / "plugins" / PLUGIN_NAME
+        else project_path / ".harbor" / "plugins" / PLUGIN_NAME
     )
     operations.append(
         _file_operation(
@@ -172,7 +172,7 @@ def build_plan(
             operations.append(
                 _file_operation(
                     f"canonical skill {name}",
-                    project_path / ".agtx" / "skills" / name / "SKILL.md",
+                    project_path / ".harbor" / "skills" / name / "SKILL.md",
                     content,
                 )
             )
@@ -180,7 +180,7 @@ def build_plan(
     if write_harbor_yml:
         operations.append(_harbor_yml_operation(project_path / "harbor.yml"))
     if write_runtime_target:
-        operations.append(_runtime_target_operation(project_path / ".agtx" / "runtime-target.json"))
+        operations.append(_runtime_target_operation(project_path / ".harbor" / "runtime-target.json"))
 
     return BootstrapPlan(project=project_path, operations=tuple(operations))
 
@@ -191,7 +191,7 @@ def _repo_root() -> Path:
 
 def _global_plugin_root() -> Path:
     home = os.environ.get("HOME") or str(Path.home())
-    return Path(home) / ".config" / "agtx" / "plugins"
+    return Path(home) / ".config" / "harbor" / "plugins"
 
 
 def _discover_skills(skills_dir: Path) -> tuple[tuple[str, Path], ...]:
@@ -244,18 +244,18 @@ def _harbor_yml_operation(path: Path) -> BootstrapOperation:
         if not isinstance(loaded, dict):
             raise ValueError(f"{path} must contain a YAML mapping")
         data = dict(loaded)
-        agtx = data.get("agtx") or {}
-        if not isinstance(agtx, dict):
-            raise ValueError(f"{path}: agtx must be a YAML mapping when present")
-        agtx = dict(agtx)
+        harbor = data.get("harbor") or {}
+        if not isinstance(harbor, dict):
+            raise ValueError(f"{path}: harbor must be a YAML mapping when present")
+        harbor = dict(harbor)
     else:
         data = {}
-        agtx = {}
+        harbor = {}
 
-    agtx["plugin"] = PLUGIN_NAME
-    data["agtx"] = agtx
+    harbor["plugin"] = PLUGIN_NAME
+    data["harbor"] = harbor
     content = yaml.safe_dump(data, sort_keys=False, allow_unicode=False).encode("utf-8")
-    return _file_operation("harbor.yml agtx plugin", path, content)
+    return _file_operation("harbor.yml harbor plugin", path, content)
 
 
 def _runtime_target_operation(path: Path) -> BootstrapOperation:
@@ -307,14 +307,14 @@ def apply_bootstrap(
 
 
 def seed_bootstrap_tasks(project: str | Path) -> tuple[tuple[agtx_client.Task, bool], ...]:
-    """Register *project* with agtx and ensure Harbor's starter tasks exist."""
+    """Register *project* with the upstream task DB and ensure Harbor's starter tasks exist."""
 
     project_record = agtx_client.AgtxDb(
         project_db_p=None,  # type: ignore[arg-type]
         global_db_p=agtx_client.global_db_path(),
     ).register_project(project)
     project_db = (
-        agtx_client.agtx_config_dir()
+        agtx_client.harbor_data_dir()
         / "projects"
         / f"{agtx_client.hash_project_path(project_record.path)}.db"
     )

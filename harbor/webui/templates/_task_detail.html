@@ -50,6 +50,13 @@
           </div>
         {% else %}
           <p class="muted" style="margin-top:0;">The task has a session name, but Harbor cannot see a live tmux session for it right now.</p>
+          {% if resume_available %}
+            <form method="post" action="/actions/move/{{ task.id }}" class="inline" data-resume-control style="margin-bottom: 10px;">
+              <input type="hidden" name="action" value="resume">
+              <button type="submit">Resume</button>
+              <span class="muted">Session lost</span>
+            </form>
+          {% endif %}
           <pre class="pane-capture">{{ pane_capture }}</pre>
         {% endif %}
 
@@ -164,7 +171,7 @@
             {% if start_blocked %}
               disabled title="Blocked by: {% for b in blockers %}{{ b.short_id }} {{ b.title }} [{{ b.status }}]{% if not loop.last %}; {% endif %}{% endfor %}"
             {% else %}
-              title="{% if task.status == 'running' %}Running auto-advances to Review when agtx-task-verify reports passed. Click to force-advance now.{% else %}Advance to the next phase{% endif %}"
+              title="{% if task.status == 'running' %}Running auto-advances to Review when harbor-task-verify reports passed. Click to force-advance now.{% else %}Advance to the next phase{% endif %}"
             {% endif %}
           >{% if start_blocked %}Blocked{% elif task.status == 'running' %}Force forward{% else %}Move forward{% endif %}</button>
         </form>
@@ -179,7 +186,7 @@
 
       {% if task.status == 'running' %}
         <p class="muted" style="flex-basis: 100%; margin: 4px 0 0;">
-          Running auto-advances to Review when the worker reports <code>agtx-verify ... passed</code> and calls <code>move_forward</code> itself.
+          Running auto-advances to Review when the worker reports <code>harbor-verify ... passed</code> and calls <code>move_forward</code> itself.
         </p>
       {% endif %}
 

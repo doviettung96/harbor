@@ -52,7 +52,7 @@ def cmd_run_epic(args: argparse.Namespace) -> int:
 
 def cmd_daemon(args: argparse.Namespace) -> int:
     """Legacy `daemon` subcommand — kept as an alias for `webui` so existing scripts
-    don't break. Both serve the same agtx webview now (the bead-coupled webui is gone).
+    don't break. Both serve the same Harbor webview now (the bead-coupled webui is gone).
     """
     return cmd_webui(args)
 
@@ -127,13 +127,15 @@ def cmd_webui_diagnose(args: argparse.Namespace) -> int:
         agtx_config_dir,
         global_db_path,
         hash_project_path,
+        harbor_data_dir,
         list_registered_projects,
         project_db_path,
         resolve_project_db_path,
     )
 
     project_path = Path(args.project_path or Path.cwd()).resolve()
-    print(f"agtx config dir:    {agtx_config_dir()}")
+    print(f"harbor data dir:    {harbor_data_dir()}")
+    print(f"legacy agtx dir:    {agtx_config_dir()}")
     print(f"global index.db:    {global_db_path()} {'(exists)' if global_db_path().exists() else '(missing)'}")
     print()
     print(f"Project path:       {project_path}")
@@ -150,12 +152,19 @@ def cmd_webui_diagnose(args: argparse.Namespace) -> int:
     print()
     registered = list_registered_projects()
     if registered:
-        print(f"Projects in agtx index.db ({len(registered)}):")
+        print(f"Projects in Harbor index.db ({len(registered)}):")
         for name, path in registered:
             mark = "<-- this project" if path == canonical else ""
             print(f"  - {name:30} {path}  {mark}")
     else:
-        print("No projects registered in agtx's index.db.")
+        print("No projects registered in Harbor's index.db.")
+    return 0
+
+
+def cmd_mcp_serve(args: argparse.Namespace) -> int:
+    from .mcp_server import run_stdio
+
+    run_stdio()
     return 0
 
 
@@ -201,7 +210,7 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(
             "--project-path",
             default=None,
-            help="Initial project to select. The project tree still comes from agtx's global index.",
+            help="Initial project to select. The project tree comes from Harbor's global index.",
         )
         parser.add_argument(
             "--agent-command",
@@ -246,9 +255,9 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument(
             "--plugin", default=None,
             help="Workflow plugin to use for phase commands/prompts/auto-dismiss. "
-            "Pass a plugin NAME (searched in <repo>/plugins/, .agtx/plugins/, "
-            "~/.config/agtx/plugins/) or a direct PATH to plugin.toml. Overrides "
-            "harbor.yml's `agtx.plugin` key.",
+            "Pass a plugin NAME (searched in <repo>/plugins/, .harbor/plugins/, "
+            "~/.config/harbor/plugins/) or a direct PATH to plugin.toml. Overrides "
+            "harbor.yml's `harbor.plugin` key.",
         )
         parser.add_argument(
             "--base-branch", default="main",
@@ -276,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
             "forward transition.",
         )
 
-    w = sub.add_parser("webui", help="Run the agtx kanban webview at http://127.0.0.1:8765/.")
+    w = sub.add_parser("webui", help="Run the Harbor kanban webview at http://127.0.0.1:8765/.")
     _add_webui_args(w)
     w.set_defaults(func=cmd_webui)
 
@@ -289,11 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     diag = sub.add_parser(
         "webui-diagnose",
-        help="Print the resolved agtx DB path and registered projects (for debugging "
+        help="Print the resolved Harbor DB path and registered projects (for debugging "
         "'no such table: transition_requests' errors).",
     )
     diag.add_argument("--project-path", default=None, help="Project path (default: cwd).")
     diag.set_defaults(func=cmd_webui_diagnose)
+
+    mcp = sub.add_parser("mcp-serve", help="Run Harbor's MCP server over stdio.")
+    mcp.set_defaults(func=cmd_mcp_serve)
 
     return p
 

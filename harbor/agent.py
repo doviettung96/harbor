@@ -112,28 +112,28 @@ class Config:
     # POSIX-style command substitution (`"$(cat 'path')"`) without fighting
     # PowerShell's native-arg-pass quirks. None means "use tmux's default".
     default_shell: str | None = None
-    # Default agent invocation for the agtx webview, read from harbor.yml's
-    # `agtx.agent_command`. When set, the webview uses this when no CLI
+    # Default agent invocation for the Harbor webview, read from harbor.yml's
+    # `harbor.agent_command`. When set, the webview uses this when no CLI
     # `--agent-command` was passed. The CLI flag still wins over this value
     # so a one-off override is always possible. Tuple form to match
     # TransitionConfig.agent_command.
-    agtx_agent_command: tuple[str, ...] | None = None
-    # Per-agent worker CLI overrides for the agtx webview, read from
-    # harbor.yml's `agtx.agent_command_by_agent`. Maps an agtx task agent name
+    harbor_agent_command: tuple[str, ...] | None = None
+    # Per-agent worker CLI overrides for the Harbor webview, read from
+    # harbor.yml's `harbor.agent_command_by_agent`. Maps a task agent name
     # (claude/codex/gemini/...) to the argv harbor launches for that agent's
-    # worker session. Checked before `agtx_agent_command` when resolving a
+    # worker session. Checked before `harbor_agent_command` when resolving a
     # task's worker, so the global command can target the manual planning
     # session while each task's worker still follows its own agent. The
     # webui's `--map-agent` CLI flag overrides any key set here.
-    agtx_agent_command_by_agent: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    harbor_agent_command_by_agent: dict[str, tuple[str, ...]] = field(default_factory=dict)
     # Workflow plugin to use for phase commands/prompts/auto-dismiss. Read
-    # from `agtx.plugin` in harbor.yml; the CLI `--plugin` flag overrides.
-    # Can be a plain plugin name (searched in <repo>/plugins/, .agtx/plugins/,
-    # ~/.config/agtx/plugins/) or a direct path to plugin.toml.
-    agtx_plugin: str | None = None
-    # Free-form repo-level instructions appended to every agtx phase prompt and
+    # from `harbor.plugin` in harbor.yml; the CLI `--plugin` flag overrides.
+    # Can be a plain plugin name (searched in <repo>/plugins/, .harbor/plugins/,
+    # ~/.config/harbor/plugins/) or a direct path to plugin.toml.
+    harbor_plugin: str | None = None
+    # Free-form repo-level instructions appended to every Harbor phase prompt and
     # written into each task worktree for skills to read later.
-    agtx_prompt_append: str = ""
+    harbor_prompt_append: str = ""
 
     def get(self, name: str | None) -> AgentProfile:
         key = name or self.default_profile
@@ -189,11 +189,11 @@ def _profile_from_dict(name: str, raw: dict[str, Any]) -> AgentProfile:
     )
 
 
-def _parse_agtx_agent_command(raw: Any) -> tuple[str, ...] | None:
+def _parse_harbor_agent_command(raw: Any) -> tuple[str, ...] | None:
     """Accept either a shell-quoted string or a list of strings.
 
     `harbor.yml`:
-        agtx:
+        harbor:
           agent_command: "codex -m gpt-5.5 --reasoning-effort high"
         # OR
         agent_command: [codex, -m, gpt-5.5, --reasoning-effort, high]
@@ -208,18 +208,18 @@ def _parse_agtx_agent_command(raw: Any) -> tuple[str, ...] | None:
         argv = [str(item) for item in raw if str(item).strip()]
         return tuple(argv) if argv else None
     raise ValueError(
-        f"agtx.agent_command must be a string or list of strings, got {type(raw).__name__}"
+        f"harbor.agent_command must be a string or list of strings, got {type(raw).__name__}"
     )
 
 
-def _parse_agtx_agent_command_map(raw: Any) -> dict[str, tuple[str, ...]]:
-    """Parse `agtx.agent_command_by_agent` — a mapping from an agtx task agent
+def _parse_harbor_agent_command_map(raw: Any) -> dict[str, tuple[str, ...]]:
+    """Parse `harbor.agent_command_by_agent` — a mapping from a task agent
     name (claude/codex/gemini/...) to the CLI invocation harbor launches for
     that agent's worker session. Each value is a shell-quoted string or a list
     of strings, the same shapes `agent_command` accepts.
 
     `harbor.yml`:
-        agtx:
+        harbor:
           agent_command_by_agent:
             codex: "codex --yolo"
             claude: [claude, --dangerously-skip-permissions]
@@ -228,11 +228,11 @@ def _parse_agtx_agent_command_map(raw: Any) -> dict[str, tuple[str, ...]]:
         return {}
     if not isinstance(raw, dict):
         raise ValueError(
-            f"agtx.agent_command_by_agent must be a mapping, got {type(raw).__name__}"
+            f"harbor.agent_command_by_agent must be a mapping, got {type(raw).__name__}"
         )
     out: dict[str, tuple[str, ...]] = {}
     for key, value in raw.items():
-        argv = _parse_agtx_agent_command(value)
+        argv = _parse_harbor_agent_command(value)
         if argv:
             out[str(key)] = argv
     return out
@@ -289,29 +289,33 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     default_shell = data.get("default_shell")
     if default_shell is None:
         default_shell = _auto_detect_default_shell()
-    agtx_section = data.get("agtx") or {}
-    agtx_agent_command = _parse_agtx_agent_command(agtx_section.get("agent_command"))
-    agtx_agent_command_by_agent = _parse_agtx_agent_command_map(
-        agtx_section.get("agent_command_by_agent")
-    )
-    agtx_plugin = agtx_section.get("plugin")
-    if agtx_plugin is not None and not isinstance(agtx_plugin, str):
+    harbor_section = data.get("harbor") or {}
+    if not isinstance(harbor_section, dict):
         raise ValueError(
-            f"agtx.plugin must be a string (plugin name or path), got {type(agtx_plugin).__name__}"
+            f"harbor must be a YAML mapping when present, got {type(harbor_section).__name__}"
         )
-    agtx_prompt_append = agtx_section.get("prompt_append") or ""
-    if not isinstance(agtx_prompt_append, str):
+    harbor_agent_command = _parse_harbor_agent_command(harbor_section.get("agent_command"))
+    harbor_agent_command_by_agent = _parse_harbor_agent_command_map(
+        harbor_section.get("agent_command_by_agent")
+    )
+    harbor_plugin = harbor_section.get("plugin")
+    if harbor_plugin is not None and not isinstance(harbor_plugin, str):
         raise ValueError(
-            f"agtx.prompt_append must be a string, got {type(agtx_prompt_append).__name__}"
+            f"harbor.plugin must be a string (plugin name or path), got {type(harbor_plugin).__name__}"
+        )
+    harbor_prompt_append = harbor_section.get("prompt_append") or ""
+    if not isinstance(harbor_prompt_append, str):
+        raise ValueError(
+            f"harbor.prompt_append must be a string, got {type(harbor_prompt_append).__name__}"
         )
     return Config(
         profiles=profiles,
         default_profile=default,
         default_shell=default_shell,
-        agtx_agent_command=agtx_agent_command,
-        agtx_agent_command_by_agent=agtx_agent_command_by_agent,
-        agtx_plugin=agtx_plugin,
-        agtx_prompt_append=agtx_prompt_append,
+        harbor_agent_command=harbor_agent_command,
+        harbor_agent_command_by_agent=harbor_agent_command_by_agent,
+        harbor_plugin=harbor_plugin,
+        harbor_prompt_append=harbor_prompt_append,
     )
 
 
@@ -350,19 +354,19 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
     }
     if cfg.default_shell is not None:
         data["default_shell"] = cfg.default_shell
-    agtx: dict[str, Any] = {}
-    if cfg.agtx_agent_command:
-        agtx["agent_command"] = list(cfg.agtx_agent_command)
-    if cfg.agtx_agent_command_by_agent:
-        agtx["agent_command_by_agent"] = {
-            k: list(v) for k, v in sorted(cfg.agtx_agent_command_by_agent.items())
+    harbor: dict[str, Any] = {}
+    if cfg.harbor_agent_command:
+        harbor["agent_command"] = list(cfg.harbor_agent_command)
+    if cfg.harbor_agent_command_by_agent:
+        harbor["agent_command_by_agent"] = {
+            k: list(v) for k, v in sorted(cfg.harbor_agent_command_by_agent.items())
         }
-    if cfg.agtx_plugin:
-        agtx["plugin"] = cfg.agtx_plugin
-    if cfg.agtx_prompt_append:
-        agtx["prompt_append"] = cfg.agtx_prompt_append
-    if agtx:
-        data["agtx"] = agtx
+    if cfg.harbor_plugin:
+        harbor["plugin"] = cfg.harbor_plugin
+    if cfg.harbor_prompt_append:
+        harbor["prompt_append"] = cfg.harbor_prompt_append
+    if harbor:
+        data["harbor"] = harbor
     return data
 
 

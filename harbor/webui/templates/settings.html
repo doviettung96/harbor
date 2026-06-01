@@ -31,7 +31,7 @@
         name="plugin"
         type="text"
         value="{{ plugin_text }}"
-        placeholder="agtx-workflow-template"
+        placeholder="harbor-workflow-template"
         style="display: block; width: 100%; margin: 4px 0 10px;"
       >
 
@@ -46,7 +46,7 @@
       >
 
       <label class="muted" for="prompt_append">Prompt append</label>
-      <textarea id="prompt_append" name="prompt_append" spellcheck="false">{{ cfg.agtx_prompt_append }}</textarea>
+      <textarea id="prompt_append" name="prompt_append" spellcheck="false">{{ cfg.harbor_prompt_append }}</textarea>
       <div style="margin-top: 10px;">
         <button type="submit">Save runtime settings</button>
       </div>
@@ -61,7 +61,7 @@
       Worker instructions remain task-scoped. Open a task and use its Worker Instructions box before moving it to Planning or Running.
     </p>
     <p class="muted">
-      Harbor saves that text into the task description as <code>## Worker Instructions</code>, appends it only to that task's worker prompts, and writes it into that task worktree as <code>.agtx/shared-instructions.md</code>.
+      Harbor saves that text into the task description as <code>## Worker Instructions</code>, appends it only to that task's worker prompts, and writes it into that task worktree as <code>.harbor/shared-instructions.md</code>.
     </p>
   </div>
 </div>

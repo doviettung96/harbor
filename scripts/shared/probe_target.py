@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Probe the configured runtime target. Exit 0 if reachable, non-zero otherwise.
 
-Reads `.agtx/runtime-target.json`. The user-defined `target.probe_command` is
+Reads `.harbor/runtime-target.json`. The user-defined `target.probe_command` is
 the source of truth for non-local targets. Prints a single-line structured
-summary so callers (target_runtime.py, agtx-task-verify, CI) can grep it.
+summary so callers (target_runtime.py, harbor-task-verify, CI) can grep it.
 
 Exit codes:
   0 = target is local OR probe_command exited 0
@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_PATH = REPO_ROOT / ".agtx" / "runtime-target.json"
+CONFIG_PATH = REPO_ROOT / ".harbor" / "runtime-target.json"
 
 
 def _summary(kind: str, probe: str | None, exit_code: int) -> str:
@@ -82,7 +82,7 @@ def main() -> int:
         print(_summary(kind, None, 1), file=sys.stderr)
         sys.stderr.write(
             "probe_target: target.kind is non-local but target.probe_command is not set. "
-            "Add a probe_command to .agtx/runtime-target.json (e.g. an `adb shell pidof <pkg>` "
+            "Add a probe_command to .harbor/runtime-target.json (e.g. an `adb shell pidof <pkg>` "
             "or a window-enumerator) so the worker can verify the target is reachable.\n"
         )
         return 1

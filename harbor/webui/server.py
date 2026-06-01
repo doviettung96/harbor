@@ -1,6 +1,6 @@
-"""FastAPI server for Harbor's Windows-friendly agtx web UI.
+"""FastAPI server for Harbor's Windows-friendly task web UI.
 
-The web UI is a single global process. It reads agtx's global project index,
+The web UI is a single global process. It reads Harbor's global project index,
 shows every registered project in a left project tree, and processes pending
 transition_requests for every initialized project DB. The live Harbor runtime
 configuration is shared across the process and persisted at Harbor's global
@@ -41,6 +41,7 @@ from ..agtx_client import (
     Project,
     Task,
     VALID_STATUSES,
+    ensure_harbor_data_migrated,
     global_db_path,
     project_db_path,
     strip_extended_length_prefix,
@@ -154,7 +155,7 @@ class GlobalWebuiState:
     def current_project(self) -> ProjectContext:
         contexts = self.refresh_projects()
         if not contexts:
-            raise HTTPException(404, "no agtx projects registered")
+            raise HTTPException(404, "no Harbor projects registered")
         project_id = self.selected_project_id or contexts[0].project.id
         for ctx in contexts:
             if ctx.project.id == project_id:
@@ -288,7 +289,7 @@ def create_app(
     """Build the global FastAPI app.
 
     `repo_root` and `db` are retained for compatibility with older tests and
-    callers. In normal use, projects come from agtx's global index. Passing
+    callers. In normal use, projects come from Harbor's global index. Passing
     `db` without `projects` creates a single synthetic project context.
     """
     initial_path = Path(project_path or repo_root or Path.cwd()).resolve()
@@ -302,6 +303,10 @@ def create_app(
             )
         ]
         project_dbs = {"default": db}
+
+    migration_report = None
+    if projects is None:
+        migration_report = ensure_harbor_data_migrated()
 
     runtime_path = Path(runtime_config_path) if runtime_config_path else global_runtime_config_path()
     runtime_cfg = load_runtime_config(runtime_path)
@@ -341,8 +346,9 @@ def create_app(
     state.supervisor = GlobalTransitionSupervisor(state)
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    app = FastAPI(title="harbor (agtx webview)", docs_url=None, redoc_url=None)
+    app = FastAPI(title="harbor (Harbor webview)", docs_url=None, redoc_url=None)
     app.state.harbor = state
+    app.state.harbor_migration_report = migration_report
 
     if autostart_worker:
         @app.on_event("startup")
@@ -413,13 +419,13 @@ def create_app(
     def _pane_has_task_sentinel(task: Task, pane: str) -> bool:
         if not pane:
             return False
-        agtx_prefix = f"agtx-verify task={task.id} "
-        if agtx_prefix in pane:
+        harbor_prefix = f"harbor-verify task={task.id} "
+        if harbor_prefix in pane:
             return any(
                 marker in pane
                 for marker in (
-                    f"{agtx_prefix}probes=",
-                    f"{agtx_prefix}escalated",
+                    f"{harbor_prefix}probes=",
+                    f"{harbor_prefix}escalated",
                 )
             )
         return f"HARBOR-DONE: {task.id} " in pane
@@ -572,6 +578,13 @@ def create_app(
         if task is None:
             raise HTTPException(404, f"task {task_id!r} not found")
         live_session = _is_session_live(task.session_name)
+        resume_available = (
+            bool(task.session_name)
+            and not live_session
+            and task.status in {"planning", "running", "review"}
+            and bool(task.worktree_path)
+            and Path(task.worktree_path).exists()
+        )
         return _template_context(
             request,
             selected=ctx,
@@ -579,6 +592,7 @@ def create_app(
             task=task,
             drawer=drawer,
             live_session=live_session,
+            resume_available=resume_available,
             pane_capture="" if live_session else _capture_pane(task.session_name),
             attach_command=_attach_command(task.session_name),
             task_ws_url=(
@@ -918,7 +932,7 @@ def create_app(
         effective_agent = (
             _planning_agent_argv(ctx)
             if ctx is not None
-            else tuple(cfg.agtx_agent_command or DEFAULT_AGENT_COMMAND)
+            else tuple(cfg.harbor_agent_command or DEFAULT_AGENT_COMMAND)
         )
         return templates.TemplateResponse(
             "settings.html",
@@ -926,11 +940,11 @@ def create_app(
                 request,
                 selected=ctx,
                 cfg=cfg,
-                agent_command_text=_shell_join(cfg.agtx_agent_command),
+                agent_command_text=_shell_join(cfg.harbor_agent_command),
                 effective_agent_command_text=_shell_join(effective_agent),
                 cli_agent_override=state.options.agent_command is not None,
                 default_shell_text=cfg.default_shell or "",
-                plugin_text=cfg.agtx_plugin or "",
+                plugin_text=cfg.harbor_plugin or "",
             ),
         )
 
@@ -1220,21 +1234,21 @@ def create_app(
         updates: dict[str, Any] = {}
         if agent_command is not None:
             try:
-                updates["agtx_agent_command"] = shell_split(agent_command)
+                updates["harbor_agent_command"] = shell_split(agent_command)
             except ValueError as exc:
                 raise HTTPException(400, f"invalid agent command: {exc}") from exc
         if default_shell is not None:
             updates["default_shell"] = default_shell.strip() or None
         if plugin is not None:
-            updates["agtx_plugin"] = plugin.strip() or None
+            updates["harbor_plugin"] = plugin.strip() or None
         if prompt_append is not None:
-            updates["agtx_prompt_append"] = prompt_append.rstrip()
+            updates["harbor_prompt_append"] = prompt_append.rstrip()
         cfg = replace(cfg, **updates)
         state.update_runtime(cfg)
         return RedirectResponse("/settings", status_code=303)
 
-    @app.post("/actions/settings/agtx")
-    async def compat_action_settings_agtx(prompt_append: str = Form("")) -> RedirectResponse:
+    @app.post("/actions/settings/harbor")
+    async def action_settings_harbor(prompt_append: str = Form("")) -> RedirectResponse:
         return await action_settings_runtime(
             agent_command=None,
             default_shell=None,
@@ -1357,7 +1371,7 @@ def create_app(
 
         refreshed = ctx.db.get_task(task_id)
         if refreshed is not None and refreshed.worktree_path:
-            shared = Path(refreshed.worktree_path) / ".agtx" / "shared-instructions.md"
+            shared = Path(refreshed.worktree_path) / ".harbor" / "shared-instructions.md"
             instructions = task_worker_instructions(refreshed)
             if instructions:
                 shared.parent.mkdir(parents=True, exist_ok=True)
@@ -1534,20 +1548,20 @@ def _transition_config_for(
 ) -> TransitionConfig:
     if options.agent_command:
         resolved_agent_command: tuple[str, ...] | None = options.agent_command
-    elif cfg.agtx_agent_command:
-        resolved_agent_command = cfg.agtx_agent_command
+    elif cfg.harbor_agent_command:
+        resolved_agent_command = cfg.harbor_agent_command
     else:
         resolved_agent_command = None
 
-    plugin_name = options.plugin or cfg.agtx_plugin
+    plugin_name = options.plugin or cfg.harbor_plugin
     resolved_plugin: WorkflowPlugin | None = None
     if plugin_name:
         resolved_plugin = load_plugin(plugin_name, repo_root=ctx.path)
 
-    # harbor.yml's `agtx.agent_command_by_agent` is the base map; the webui's
+    # harbor.yml's `harbor.agent_command_by_agent` is the base map; the webui's
     # `--map-agent` CLI flags overlay it per-key so a one-off override wins.
     resolved_agent_command_by_agent: dict[str, tuple[str, ...]] = dict(
-        cfg.agtx_agent_command_by_agent
+        cfg.harbor_agent_command_by_agent
     )
     resolved_agent_command_by_agent.update(options.agent_command_by_agent)
 
@@ -1560,7 +1574,7 @@ def _transition_config_for(
         worktree_dir=options.worktree_dir,
         init_script=options.init_script,
         copy_files=options.copy_files,
-        prompt_append=cfg.agtx_prompt_append,
+        prompt_append=cfg.harbor_prompt_append,
         inject_prompts=options.inject_prompts,
         pr_on_review=options.pr_on_review,
         default_shell=cfg.default_shell,

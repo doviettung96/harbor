@@ -1,4 +1,4 @@
-"""Smoke tests for the agtx-targeted webui.
+"""Smoke tests for the Harbor-targeted webui.
 
 Spins up a TestClient against `create_app(...)` with an in-memory AgtxDb so we
 exercise routes/templates without touching the real ~/.config/agtx tree or
@@ -201,6 +201,95 @@ def test_pane_partial_empty_when_no_session(app_client):
     r = client.get("/_partials/pane/t1")
     assert r.status_code == 200
     assert "<pre" in r.text  # rendered, just empty
+
+
+def test_resume_control_renders_for_dead_running_task_with_worktree(app_client, tmp_path: Path):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", title="Resume target", status="running", session_name="task-fake",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "Resume target" in r.text
+    assert "cannot see a live tmux session" in r.text
+    assert "data-resume-control" in r.text
+    assert 'action="/actions/move/t1"' in r.text
+    assert 'name="action" value="resume"' in r.text
+    assert ">Resume</button>" in r.text
+
+
+@pytest.mark.parametrize("status", ["planning", "running", "review"])
+def test_resume_control_hidden_when_worktree_missing(app_client, status: str):
+    client, memdb, fake_tmux = app_client
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, session_name="task-fake",
+    ))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+def test_resume_control_hidden_for_live_session(app_client, tmp_path: Path):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="running", session_name="task-live",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = True
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-terminal-root" in r.text
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+@pytest.mark.parametrize("status", ["backlog", "done"])
+def test_resume_control_hidden_for_backlog_and_done(app_client, tmp_path: Path, status: str):
+    client, memdb, fake_tmux = app_client
+    worktree = tmp_path / status
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, session_name="task-fake",
+    ))
+    memdb.update_task("t1", worktree_path=str(worktree))
+    fake_tmux.has_session.return_value = False
+
+    r = client.get("/?task=t1")
+
+    assert r.status_code == 200
+    assert "data-resume-control" not in r.text
+    assert 'value="resume"' not in r.text
+
+
+def test_post_resume_queues_existing_move_action(app_client):
+    client, memdb, _ = app_client
+    insert_test_task(memdb._connect_project(), _make_task(id="t1", status="running"))
+
+    r = client.post(
+        "/actions/move/t1",
+        data={"action": "resume"},
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    pending = memdb.pending_transition_requests()
+    assert len(pending) == 1
+    assert pending[0].task_id == "t1"
+    assert pending[0].action == "resume"
 
 
 def test_board_query_renders_planning_session_drawer(app_client):
@@ -462,10 +551,11 @@ def test_done_view_renders_pr_url_and_cleanup_button(app_client):
 
 
 def test_project_init_registers_project_from_ui(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "new-project"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
 
     app = create_app(
         tmp_path,
@@ -497,8 +587,9 @@ def test_project_init_registers_project_from_ui(tmp_path: Path, monkeypatch):
 
 
 def test_project_init_rejects_missing_path(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    fake_config = tmp_path / "harbor-config"
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -516,11 +607,12 @@ def test_project_init_rejects_missing_path(tmp_path: Path, monkeypatch):
 
 
 def test_project_folder_browser_lists_and_tracks_folder(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     root = tmp_path / "root"
     child = root / "child-project"
     child.mkdir(parents=True)
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -553,10 +645,11 @@ def test_project_init_pick_folder_registers_selected_folder(
     tmp_path: Path,
     monkeypatch,
 ):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "picked-project"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -581,10 +674,11 @@ def test_project_init_pick_folder_get_registers_selected_folder(
     tmp_path: Path,
     monkeypatch,
 ):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "picked-by-url"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -606,8 +700,9 @@ def test_project_init_pick_folder_get_registers_selected_folder(
 
 
 def test_project_init_pick_folder_cancel_is_noop(tmp_path: Path, monkeypatch):
-    fake_config = tmp_path / "agtx-config"
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    fake_config = tmp_path / "harbor-config"
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     app = create_app(
         tmp_path,
         autostart_worker=False,
@@ -901,7 +996,7 @@ def test_post_escalate_queues_request_with_reason(app_client):
 def test_global_runtime_config_used_as_default(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: \"codex -m gpt-5.5 --reasoning-effort high\"\n",
         encoding="utf-8",
     )
@@ -915,7 +1010,7 @@ def test_global_runtime_config_used_as_default(tmp_path: Path, memdb: AgtxDb):
 def test_cli_agent_command_overrides_global_runtime_config(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n",
         encoding="utf-8",
     )
@@ -933,7 +1028,7 @@ def test_global_runtime_prompt_append_used_by_transition_config(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  prompt_append: Use emulator-5554 for Android checks.\n",
         encoding="utf-8",
     )
@@ -962,7 +1057,7 @@ def test_settings_save_updates_global_runtime_config(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n",
         encoding="utf-8",
     )
@@ -971,7 +1066,7 @@ def test_settings_save_updates_global_runtime_config(
     )
     with TestClient(app) as client:
         r = client.post(
-            "/actions/settings/agtx",
+            "/actions/settings/harbor",
             data={"prompt_append": "Use emulator-5554 for Android checks."},
             follow_redirects=False,
         )
@@ -991,7 +1086,7 @@ def test_settings_save_updates_session_command_plugin_and_shell(
 ):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: claude\n",
         encoding="utf-8",
     )
@@ -1003,7 +1098,7 @@ def test_settings_save_updates_session_command_plugin_and_shell(
             "/settings/runtime",
             data={
                 "agent_command": "codex -m gpt-5.5",
-                "plugin": "agtx-workflow-template",
+                "plugin": "harbor-workflow-template",
                 "default_shell": "C:/Program Files/Git/bin/bash.exe",
                 "prompt_append": "shared",
             },
@@ -1012,14 +1107,14 @@ def test_settings_save_updates_session_command_plugin_and_shell(
         assert r.status_code == 303
 
     runtime_cfg = app.state.harbor.runtime.cfg
-    assert runtime_cfg.agtx_agent_command == ("codex", "-m", "gpt-5.5")
+    assert runtime_cfg.harbor_agent_command == ("codex", "-m", "gpt-5.5")
     assert runtime_cfg.default_shell == "C:/Program Files/Git/bin/bash.exe"
-    assert runtime_cfg.agtx_plugin == "agtx-workflow-template"
+    assert runtime_cfg.harbor_plugin == "harbor-workflow-template"
     text = runtime_yml.read_text(encoding="utf-8")
     assert "- codex" in text
     assert "- -m" in text
     assert "- gpt-5.5" in text
-    assert "plugin: agtx-workflow-template" in text
+    assert "plugin: harbor-workflow-template" in text
     assert "default_shell: C:/Program Files/Git/bin/bash.exe" in text
     assert "prompt_append: shared" in text
 
@@ -1058,8 +1153,8 @@ def test_transition_config_uses_harbor_yml_agent_map(tmp_path: Path, memdb: Agtx
     cfg = Config(
         profiles={},
         default_profile="balanced",
-        agtx_agent_command=("claude", "--dangerously-skip-permissions"),
-        agtx_agent_command_by_agent={
+        harbor_agent_command=("claude", "--dangerously-skip-permissions"),
+        harbor_agent_command_by_agent={
             "codex": ("codex", "--yolo"),
             "claude": ("claude", "--dangerously-skip-permissions"),
         },
@@ -1082,7 +1177,7 @@ def test_transition_config_cli_map_agent_overrides_harbor_yml(
     cfg = Config(
         profiles={},
         default_profile="balanced",
-        agtx_agent_command_by_agent={"codex": ("codex", "--yolo")},
+        harbor_agent_command_by_agent={"codex": ("codex", "--yolo")},
     )
     ctx, options = _ctx_and_options(
         tmp_path, memdb, cli_map={"codex": ("codex", "-m", "gpt-5.5")},
@@ -1092,7 +1187,7 @@ def test_transition_config_cli_map_agent_overrides_harbor_yml(
 
 
 _AGENT_MAP_YML = (
-    "agtx:\n"
+    "harbor:\n"
     "  agent_command_by_agent:\n"
     "    codex: \"codex --yolo\"\n"
     "    claude: \"claude\"\n"
@@ -1247,7 +1342,7 @@ def test_settings_saved_agent_command_controls_new_planning_sessions(
 def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n"
+        "harbor:\n"
         "  agent_command: codex\n"
         "  prompt_append: old\n",
         encoding="utf-8",
@@ -1257,7 +1352,7 @@ def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb
     )
     with TestClient(app) as client:
         r = client.post(
-            "/actions/settings/agtx",
+            "/actions/settings/harbor",
             data={"prompt_append": ""},
             follow_redirects=False,
         )
@@ -1273,7 +1368,7 @@ def test_settings_save_empty_removes_prompt_append(tmp_path: Path, memdb: AgtxDb
 def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n  agent_command: codex\n",
+        "harbor:\n  agent_command: codex\n",
         encoding="utf-8",
     )
     project_a = tmp_path / "a"
@@ -1281,7 +1376,7 @@ def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: Ag
     project_a.mkdir()
     project_b.mkdir()
     (project_b / "harbor.yml").write_text(
-        "agtx:\n  agent_command: claude\n",
+        "harbor:\n  agent_command: claude\n",
         encoding="utf-8",
     )
     projects = [
@@ -1303,13 +1398,13 @@ def test_project_switching_does_not_mutate_live_config(tmp_path: Path, memdb: Ag
 def test_project_config_load_and_save_are_manual(tmp_path: Path, memdb: AgtxDb):
     runtime_yml = tmp_path / "runtime.yml"
     runtime_yml.write_text(
-        "agtx:\n  agent_command: codex\n",
+        "harbor:\n  agent_command: codex\n",
         encoding="utf-8",
     )
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     (project_dir / "harbor.yml").write_text(
-        "agtx:\n  agent_command: \"claude --yes\"\n",
+        "harbor:\n  agent_command: \"claude --yes\"\n",
         encoding="utf-8",
     )
     projects = [Project(id="p1", name="proj", path=str(project_dir), last_opened="1")]
@@ -1394,7 +1489,7 @@ def test_global_supervisor_processes_multiple_projects_and_skips_uninitialized(
 
 
 def test_setup_route_gone(tmp_path: Path, memdb: AgtxDb):
-    """The bead-era /setup page was removed in the agtx port — no route, no crumb link."""
+    """The bead-era /setup page was removed in the Harbor port — no route, no crumb link."""
     app = create_app(tmp_path, db=memdb, autostart_worker=False)
     with TestClient(app) as client:
         assert client.get("/setup").status_code == 404
