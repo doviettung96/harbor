@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
-def isolated_agtx_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(agtx_client, "agtx_config_dir", lambda: tmp_path / "agtx-config")
+def isolated_harbor_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(agtx_client, "harbor_data_dir", lambda: tmp_path / "harbor-config")
 
 
 def _skill_names() -> list[str]:

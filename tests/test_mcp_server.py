@@ -46,10 +46,11 @@ def _make_task(
 
 @pytest.fixture
 def project_db(tmp_path: Path, monkeypatch) -> tuple[Project, AgtxDb]:
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "repo"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
     global_db = AgtxDb(project_db_p=None, global_db_p=ac.global_db_path())  # type: ignore[arg-type]
     project = global_db.register_project(project_dir, name="harbor")
     db_path = fake_config / "projects" / f"{hash_project_path(project.path)}.db"

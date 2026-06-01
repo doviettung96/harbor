@@ -8,8 +8,8 @@ The two interesting things to verify:
    single byte, we open the wrong file and silently lose all task state. So we
    pin both a hand-computed expected hex value AND the algorithm.
 
-2. **CRUD against an in-memory SQLite using the same schema agtx writes.**
-   `init_test_db` builds a DB with agtx's column layout so we can exercise
+2. **CRUD against an in-memory SQLite using Harbor's schema.**
+   `init_test_db` builds a DB with Harbor's column layout so we can exercise
    list/get/update/claim/mark without touching disk.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ from harbor.agtx_client import (
     AgtxDb,
     Task,
     TransitionRequest,
-    agtx_config_dir,
+    harbor_data_dir,
     hash_project_path,
     init_test_db,
     insert_test_task,
@@ -64,7 +64,7 @@ def test_project_db_path_under_config_dir():
     p = project_db_path("/some/path")
     assert p.parent.name == "projects"
     assert p.name == f"{hash_project_path('/some/path')}.db"
-    assert p.parent.parent == agtx_config_dir()
+    assert p.parent.parent == harbor_data_dir()
 
 
 # ---- resolution via global index.db ---------------------------------------
@@ -77,7 +77,7 @@ def test_resolve_via_global_index_uses_canonical_path(tmp_path, monkeypatch):
 
     fake_config = tmp_path / "agtx-config"
     (fake_config / "projects").mkdir(parents=True)
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     canonical = "\\\\?\\D:\\Projects\\harbor"
     user_input = "D:\\Projects\\harbor"
@@ -106,7 +106,7 @@ def test_resolve_via_global_index_matches_windows_paths_case_insensitively(tmp_p
 
     fake_config = tmp_path / "agtx-config"
     (fake_config / "projects").mkdir(parents=True)
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     stored = "\\\\?\\C:\\Users\\Admin\\Repo"
     user_input = "c:\\users\\admin\\repo"
@@ -131,7 +131,7 @@ def test_resolve_falls_back_to_literal_when_not_in_index(tmp_path, monkeypatch):
 
     fake_config = tmp_path / "agtx-config"
     (fake_config / "projects").mkdir(parents=True)
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
     # No index.db — fallback path
     db_path, found = ac.resolve_project_db_path("/orphan")
     assert found is None
@@ -143,7 +143,7 @@ def test_list_registered_projects_returns_rows(tmp_path, monkeypatch):
 
     fake_config = tmp_path / "agtx-config"
     fake_config.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     gdb = fake_config / "index.db"
     conn = sqlite3.connect(str(gdb))
@@ -166,7 +166,7 @@ def test_list_registered_projects_returns_rows(tmp_path, monkeypatch):
 def test_list_registered_projects_empty_when_no_index(tmp_path, monkeypatch):
     from harbor import agtx_client as ac
 
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing")
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: tmp_path / "missing")
     assert ac.list_registered_projects() == []
 
 
@@ -176,7 +176,7 @@ def test_register_project_creates_global_row_and_project_db(tmp_path, monkeypatc
     fake_config = tmp_path / "agtx-config"
     project_dir = tmp_path / "repo"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     db = ac.AgtxDb(project_db_p=None, global_db_p=ac.global_db_path())  # type: ignore[arg-type]
     project = db.register_project(project_dir, name="Repo")
@@ -198,7 +198,7 @@ def test_register_project_is_idempotent_for_same_path(tmp_path, monkeypatch):
     fake_config = tmp_path / "agtx-config"
     project_dir = tmp_path / "repo"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     db = ac.AgtxDb(project_db_p=None, global_db_p=ac.global_db_path())  # type: ignore[arg-type]
     first = db.register_project(project_dir, name="First")
@@ -216,7 +216,7 @@ def test_register_project_is_idempotent_for_same_path(tmp_path, monkeypatch):
 def test_agtxdb_refuses_to_open_missing_file(tmp_path):
     db_path = tmp_path / "does-not-exist.db"
     db = AgtxDb(project_db_p=db_path)
-    with pytest.raises(FileNotFoundError, match="agtx project DB does not exist"):
+    with pytest.raises(FileNotFoundError, match="Harbor project DB does not exist"):
         db.list_tasks()
     # And the file should NOT have been silently created
     assert not db_path.exists()

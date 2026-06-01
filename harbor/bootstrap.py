@@ -314,7 +314,7 @@ def seed_bootstrap_tasks(project: str | Path) -> tuple[tuple[agtx_client.Task, b
         global_db_p=agtx_client.global_db_path(),
     ).register_project(project)
     project_db = (
-        agtx_client.agtx_config_dir()
+        agtx_client.harbor_data_dir()
         / "projects"
         / f"{agtx_client.hash_project_path(project_record.path)}.db"
     )

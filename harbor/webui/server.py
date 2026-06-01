@@ -1,6 +1,6 @@
 """FastAPI server for Harbor's Windows-friendly agtx web UI.
 
-The web UI is a single global process. It reads agtx's global project index,
+The web UI is a single global process. It reads Harbor's global project index,
 shows every registered project in a left project tree, and processes pending
 transition_requests for every initialized project DB. The live Harbor runtime
 configuration is shared across the process and persisted at Harbor's global
@@ -41,6 +41,7 @@ from ..agtx_client import (
     Project,
     Task,
     VALID_STATUSES,
+    ensure_harbor_data_migrated,
     global_db_path,
     project_db_path,
     strip_extended_length_prefix,
@@ -288,7 +289,7 @@ def create_app(
     """Build the global FastAPI app.
 
     `repo_root` and `db` are retained for compatibility with older tests and
-    callers. In normal use, projects come from agtx's global index. Passing
+    callers. In normal use, projects come from Harbor's global index. Passing
     `db` without `projects` creates a single synthetic project context.
     """
     initial_path = Path(project_path or repo_root or Path.cwd()).resolve()
@@ -302,6 +303,10 @@ def create_app(
             )
         ]
         project_dbs = {"default": db}
+
+    migration_report = None
+    if projects is None:
+        migration_report = ensure_harbor_data_migrated()
 
     runtime_path = Path(runtime_config_path) if runtime_config_path else global_runtime_config_path()
     runtime_cfg = load_runtime_config(runtime_path)
@@ -343,6 +348,7 @@ def create_app(
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app = FastAPI(title="harbor (agtx webview)", docs_url=None, redoc_url=None)
     app.state.harbor = state
+    app.state.harbor_migration_report = migration_report
 
     if autostart_worker:
         @app.on_event("startup")

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterator
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from harbor import agtx_client as ac
@@ -13,6 +14,12 @@ import harbor.webui.server as server_mod
 from harbor.agtx_client import AgtxDb, Project, init_test_db
 from harbor.bootstrap import PLUGIN_NAME, build_plan
 from harbor.webui.server import create_app
+
+
+@pytest.fixture(autouse=True)
+def isolated_harbor_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: tmp_path / "harbor-config")
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: tmp_path / "missing-agtx-config")
 
 
 def _make_memdb() -> AgtxDb:
@@ -109,10 +116,10 @@ def test_post_track_prompt_appears_for_new_unbootstrapped_project(
     tmp_path: Path,
     monkeypatch,
 ):
-    fake_config = tmp_path / "agtx-config"
+    fake_config = tmp_path / "harbor-config"
     project_dir = tmp_path / "new-project"
     project_dir.mkdir()
-    monkeypatch.setattr(ac, "agtx_config_dir", lambda: fake_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
 
     app = create_app(
         tmp_path,

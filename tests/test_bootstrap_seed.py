@@ -23,9 +23,9 @@ REQUIRED_HEADERS = (
 
 
 @pytest.fixture
-def isolated_agtx_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    config = tmp_path / "agtx-config"
-    monkeypatch.setattr(agtx_client, "agtx_config_dir", lambda: config)
+def isolated_harbor_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    config = tmp_path / "harbor-config"
+    monkeypatch.setattr(agtx_client, "harbor_data_dir", lambda: config)
     return config
 
 
@@ -47,7 +47,7 @@ def _section(description: str, header: str) -> str:
 
 def test_apply_bootstrap_seeds_two_init_tasks(
     tmp_path: Path,
-    isolated_agtx_config: Path,
+    isolated_harbor_data: Path,
 ):
     project = tmp_path / "blank"
     project.mkdir()
@@ -61,7 +61,7 @@ def test_apply_bootstrap_seeds_two_init_tasks(
 
 def test_seeded_task_descriptions_have_required_headers(
     tmp_path: Path,
-    isolated_agtx_config: Path,
+    isolated_harbor_data: Path,
 ):
     project = tmp_path / "blank"
     project.mkdir()
@@ -76,7 +76,7 @@ def test_seeded_task_descriptions_have_required_headers(
 
 def test_bootstrap_seed_is_idempotent_by_title(
     tmp_path: Path,
-    isolated_agtx_config: Path,
+    isolated_harbor_data: Path,
 ):
     project = tmp_path / "blank"
     project.mkdir()
