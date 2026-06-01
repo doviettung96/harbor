@@ -645,6 +645,138 @@ def test_spawn_proceeds_when_agent_marker_appears(
     assert any("agtx-task-worker" in t for t in typed)
 
 
+# ---- resume dead sessions -------------------------------------------------
+
+
+def _resume_worker(
+    memdb: AgtxDb,
+    fake_tmux: MagicMock,
+    fake_git: MagicMock,
+    tmp_path: Path,
+    *,
+    agent_command_by_agent: dict[str, tuple[str, ...]] | None = None,
+) -> TransitionWorker:
+    cfg = TransitionConfig(
+        project_path=tmp_path,
+        agent_command=None,
+        agent_command_by_agent=agent_command_by_agent or {},
+        default_shell="C:/Program Files/Git/bin/bash.exe",
+        inject_prompts=True,
+        agent_ready_timeout_s=0.0,
+        prompt_submit_delay_s=0.0,
+        prompt_render_timeout_s=0.0,
+        pr_on_review=False,
+    )
+    return TransitionWorker(
+        db=memdb, config=cfg, tmux=fake_tmux, git=fake_git, poll_interval=0.0,
+    )
+
+
+@pytest.mark.parametrize("status", ["planning", "running", "review"])
+def test_resume_dead_session_recreates_with_worktree_launcher(
+    tmp_path: Path, memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+    status: str,
+):
+    worktree = tmp_path / "task-t1"
+    worktree.mkdir()
+    fake_tmux.has_session.return_value = False
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, agent="claude", session_name="task-t1--p--do",
+        worktree_path=str(worktree),
+    ))
+    memdb.create_transition_request(task_id="t1", action="resume")
+
+    _resume_worker(memdb, fake_tmux, fake_git, tmp_path).process_once()
+
+    fake_tmux.ensure_session.assert_called_once_with(
+        "task-t1--p--do", str(worktree),
+        default_shell="C:/Program Files/Git/bin/bash.exe",
+    )
+    typed = [
+        c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
+        if len(c.args) >= 3
+    ]
+    assert len(typed) == 1
+    launcher = typed[0]
+    worktree_posix = str(worktree).replace("\\", "/")
+    assert launcher.startswith('"C:/Program Files/Git/bin/bash.exe" -c "')
+    assert f"cd '{worktree_posix}'" in launcher
+    assert "export AGTX_TASK_ID='t1'" in launcher
+    assert "exec claude --continue --dangerously-skip-permissions" in launcher
+    assert "agtx-task-worker" not in launcher
+    assert memdb.get_task("t1").status == status
+
+
+@pytest.mark.parametrize("status", ["backlog", "done"])
+def test_resume_rejects_backlog_and_done(
+    tmp_path: Path, memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+    status: str,
+):
+    worktree = tmp_path / "task-t1"
+    worktree.mkdir()
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status=status, agent="claude", session_name="task-t1--p--do",
+        worktree_path=str(worktree),
+    ))
+    memdb.create_transition_request(task_id="t1", action="resume")
+
+    _resume_worker(memdb, fake_tmux, fake_git, tmp_path).process_once()
+
+    fake_tmux.ensure_session.assert_not_called()
+    fake_tmux.send_keys_literal.assert_not_called()
+    recent = memdb.recent_transition_requests("t1")
+    assert "resume requires status=planning, running, or review" in (recent[0].error or "")
+
+
+def test_resume_requires_existing_worktree(
+    tmp_path: Path, memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+):
+    worktree = tmp_path / "missing-task-t1"
+    fake_tmux.has_session.return_value = False
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="running", agent="claude", session_name="task-t1--p--do",
+        worktree_path=str(worktree),
+    ))
+    memdb.create_transition_request(task_id="t1", action="resume")
+
+    _resume_worker(memdb, fake_tmux, fake_git, tmp_path).process_once()
+
+    fake_tmux.ensure_session.assert_not_called()
+    fake_tmux.send_keys_literal.assert_not_called()
+    recent = memdb.recent_transition_requests("t1")
+    assert "worktree_path does not exist" in (recent[0].error or "")
+
+
+@pytest.mark.parametrize("bypass_flag", [
+    "--yolo",
+    "--dangerously-bypass-approvals-and-sandbox",
+])
+def test_resume_codex_uses_resume_argv_and_configured_bypass_flag(
+    tmp_path: Path, memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock,
+    bypass_flag: str,
+):
+    worktree = tmp_path / "task-t1"
+    worktree.mkdir()
+    fake_tmux.has_session.return_value = False
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="running", agent="codex", session_name="task-t1--p--do",
+        worktree_path=str(worktree),
+    ))
+    memdb.create_transition_request(task_id="t1", action="resume")
+
+    _resume_worker(
+        memdb, fake_tmux, fake_git, tmp_path,
+        agent_command_by_agent={"codex": ("codex", bypass_flag)},
+    ).process_once()
+
+    typed = [
+        c.args[2] for c in fake_tmux.send_keys_literal.call_args_list
+        if len(c.args) >= 3
+    ]
+    assert len(typed) == 1
+    assert f"exec codex resume --last {bypass_flag}" in typed[0]
+
+
 # ---- per-phase agent command ---------------------------------------------
 
 
