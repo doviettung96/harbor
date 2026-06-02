@@ -8,6 +8,7 @@ import pytest
 
 from harbor import agtx_client
 from harbor.bootstrap import (
+    CONFIGURE_BUILD_TITLE,
     CONFIGURE_RUNTIME_TITLE,
     WORKER_SMOKE_TITLE,
     apply_bootstrap,
@@ -57,7 +58,7 @@ def test_apply_bootstrap_seeds_two_init_tasks(
 
     tasks = _project_db(project).list_tasks()
     titles = {task.title for task in tasks}
-    assert titles == {CONFIGURE_RUNTIME_TITLE, WORKER_SMOKE_TITLE}
+    assert titles == {CONFIGURE_RUNTIME_TITLE, WORKER_SMOKE_TITLE, CONFIGURE_BUILD_TITLE}
 
 
 def test_seeded_task_descriptions_have_required_headers(
@@ -88,7 +89,8 @@ def test_bootstrap_seed_is_idempotent_by_title(
     tasks = _project_db(project).list_tasks()
     assert [task.title for task in tasks].count(CONFIGURE_RUNTIME_TITLE) == 1
     assert [task.title for task in tasks].count(WORKER_SMOKE_TITLE) == 1
-    assert len(tasks) == 2
+    assert [task.title for task in tasks].count(CONFIGURE_BUILD_TITLE) == 1
+    assert len(tasks) == 3
 
 
 def test_configure_runtime_seeded_probe_command_exists():
@@ -100,3 +102,24 @@ def test_configure_runtime_seeded_probe_command_exists():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_configure_build_seeded_probe_runs():
+    from harbor.bootstrap import CONFIGURE_BUILD_DESCRIPTION
+
+    probe = _section(CONFIGURE_BUILD_DESCRIPTION, "## Verification Probes")
+    command = probe.strip().removeprefix("- ").strip()
+    # Run with this interpreter (which has PyYAML) instead of bare `python`.
+    if command.startswith("python "):
+        command = f'"{sys.executable}"' + command[len("python") :]
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        shell=True,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    # This repo's harbor.yml leaves harbor.build unset, so the probe should pass.
+    assert result.returncode == 0, result.stderr
+    assert "harbor.build:" in result.stdout

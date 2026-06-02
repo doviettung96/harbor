@@ -18,6 +18,7 @@ from . import agtx_client
 PLUGIN_NAME = "harbor-workflow-template"
 CONFIGURE_RUNTIME_TITLE = "Configure runtime target"
 WORKER_SMOKE_TITLE = "Worker smoke test"
+CONFIGURE_BUILD_TITLE = "Configure build command"
 
 
 AGENT_SKILL_LAYOUTS: dict[str, tuple[str, str, str, str]] = {
@@ -74,9 +75,27 @@ none
 Only edit `SMOKE_WORKER.md` for this smoke task.
 """
 
+
+CONFIGURE_BUILD_DESCRIPTION = """Set `harbor.build` in `harbor.yml` to this project's build command, or deliberately leave it unset. Harbor runs `harbor.build` always, before tests, so verification runs against current code rather than a stale running instance. For a project that ships a built artifact (e.g. a pyinstaller exe), the command should kill the running app and rebuild; for a `python main.py` project that compiles nothing, leave `harbor.build` unset.
+
+## Acceptance Criteria
+- `harbor.yml` has `harbor.build` set to a working build command, OR it is deliberately left unset for a no-build project.
+- The verification probe exits 0: it runs `harbor.build` when set (proving the command works) and passes when it is intentionally unset.
+
+## Verification Probes
+- python -c "import sys, subprocess, yaml; d = yaml.safe_load(open('harbor.yml', encoding='utf-8')) or {}; b = ((d.get('harbor') or {}).get('build') or '').strip(); print('harbor.build:', b or '(unset - no build step)'); sys.exit(0 if not b else subprocess.run(b, shell=True).returncode)"
+
+## Related Tests
+none
+
+## Worker Instructions
+Ask the user whether this project needs a build step and what the command is before editing `harbor.yml`; do not guess a build command. If the project runs via `python main.py` with no compiled artifact, confirm that `harbor.build` should stay unset and leave it unset.
+"""
+
 BOOTSTRAP_TASKS = (
     (CONFIGURE_RUNTIME_TITLE, CONFIGURE_RUNTIME_DESCRIPTION),
     (WORKER_SMOKE_TITLE, WORKER_SMOKE_DESCRIPTION),
+    (CONFIGURE_BUILD_TITLE, CONFIGURE_BUILD_DESCRIPTION),
 )
 
 
