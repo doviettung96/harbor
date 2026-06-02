@@ -134,6 +134,14 @@ class Config:
     # Free-form repo-level instructions appended to every Harbor phase prompt and
     # written into each task worktree for skills to read later.
     harbor_prompt_append: str = ""
+    # Optional project build command, read from `harbor.build` in harbor.yml.
+    # Run (always) by harbor-task-verify / build-and-test before a task's tests,
+    # via target-runtime-exec, so tests run against current code rather than a
+    # stale running instance. Project-agnostic: for a pyinstaller app it rebuilds
+    # the exe (and typically kills the old process first, inside the script); for
+    # a `python main.py` app it is usually a no-op. None / unset means "no build
+    # step" — the finalize skips straight to tests.
+    harbor_build: str | None = None
 
     def get(self, name: str | None) -> AgentProfile:
         key = name or self.default_profile
@@ -308,6 +316,13 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         raise ValueError(
             f"harbor.prompt_append must be a string, got {type(harbor_prompt_append).__name__}"
         )
+    harbor_build = harbor_section.get("build")
+    if harbor_build is not None and not isinstance(harbor_build, str):
+        raise ValueError(
+            f"harbor.build must be a string (a shell command), got {type(harbor_build).__name__}"
+        )
+    if isinstance(harbor_build, str) and not harbor_build.strip():
+        harbor_build = None
     return Config(
         profiles=profiles,
         default_profile=default,
@@ -316,6 +331,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         harbor_agent_command_by_agent=harbor_agent_command_by_agent,
         harbor_plugin=harbor_plugin,
         harbor_prompt_append=harbor_prompt_append,
+        harbor_build=harbor_build,
     )
 
 
@@ -365,6 +381,8 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
         harbor["plugin"] = cfg.harbor_plugin
     if cfg.harbor_prompt_append:
         harbor["prompt_append"] = cfg.harbor_prompt_append
+    if cfg.harbor_build:
+        harbor["build"] = cfg.harbor_build
     if harbor:
         data["harbor"] = harbor
     return data

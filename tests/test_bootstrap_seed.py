@@ -18,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_HEADERS = (
     "## Acceptance Criteria",
     "## Verification Probes",
+    "## Related Tests",
     "## Worker Instructions",
 )
 

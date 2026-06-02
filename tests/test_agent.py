@@ -232,6 +232,47 @@ def test_config_to_dict_includes_harbor_prompt_append(tmp_path: Path):
     assert data["harbor"]["prompt_append"] == "Use emulator-5554 for Android checks."
 
 
+def test_harbor_build_from_yaml(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text(
+        "harbor:\n  build: pwsh scripts/rebuild.ps1\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(yml)
+    assert cfg.harbor_build == "pwsh scripts/rebuild.ps1"
+
+
+def test_harbor_build_absent_is_none(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("harbor:\n  plugin: harbor-workflow-template\n", encoding="utf-8")
+    cfg = load_config(yml)
+    assert cfg.harbor_build is None
+
+
+def test_harbor_build_blank_is_none(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text('harbor:\n  build: "   "\n', encoding="utf-8")
+    cfg = load_config(yml)
+    assert cfg.harbor_build is None
+
+
+def test_harbor_build_rejects_non_string(tmp_path: Path):
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("harbor:\n  build: [bad, list]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="harbor.build must be a string"):
+        load_config(yml)
+
+
+def test_config_to_dict_round_trips_harbor_build(tmp_path: Path):
+    # The settings UI rewrites harbor.yml via config_to_dict; the build command
+    # must survive that round-trip rather than being silently dropped.
+    yml = tmp_path / "harbor.yml"
+    yml.write_text("harbor:\n  build: make rebuild\n", encoding="utf-8")
+    cfg = load_config(yml)
+    data = config_to_dict(cfg)
+    assert data["harbor"]["build"] == "make rebuild"
+
+
 def test_load_config_rejects_unknown_default(tmp_path: Path):
     yml = tmp_path / "harbor.yml"
     yml.write_text(

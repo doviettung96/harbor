@@ -1,11 +1,11 @@
 ---
 name: harbor-task-verify
-description: "Verify an in-progress Harbor task against the ## Verification Probes embedded in its description. Runs each probe through target-runtime-exec, optionally invokes build-and-test for repo-default checks when ## Run Repo Defaults is yes, gates the task's move to Review on success, and writes failure summaries into <worktree>/.harbor/execute.md. Use after the worker finishes implementation, before moving the task forward."
+description: "Verify an in-progress Harbor task. Runs the project build first (always, from harbor.yml `harbor.build`), then the task's ## Verification Probes and ## Related Tests through target-runtime-exec, gates the task's move to Review on every check exiting zero, and writes failure summaries into <worktree>/.harbor/execute.md. Use after the worker finishes implementation, before moving the task forward."
 ---
 
 # Harbor Task Verify
 
-The single non-negotiable gate between Running and Review for a Harbor task. Reads the task's `## Verification Probes`, runs each one through `target-runtime-exec`, and refuses to advance the task on any non-zero exit.
+The single non-negotiable gate between Running and Review for a Harbor task. It (1) runs the project build **always**, (2) runs the task's `## Verification Probes`, and (3) runs the task's `## Related Tests` — all through `target-runtime-exec` — and refuses to advance the task on any non-zero exit.
 
 This skill is what makes "I distrust pytest" enforceable. It is ALSO the only skill that should ever say "verification passed" for a Harbor task.
 
@@ -18,21 +18,27 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
 
 1. **Fetch the task.** `mcp__harbor__get_task(task_id)`. Read the description.
 
-2. **Parse `## Verification Probes`.** Each non-empty bullet line under the header is one shell command. Strip the leading `- ` and any trailing whitespace. If the section is missing or empty, do NOT advance — escalate via `mcp__harbor__move_task(task_id, action="escalate_to_user", note="missing ## Verification Probes section")` and stop.
+2. **Parse `## Verification Probes` and `## Related Tests`.** Under `## Verification Probes`, each non-empty bullet line is one shell command — strip the leading `- ` and trailing whitespace. If that section is missing or empty, do NOT advance — escalate via `mcp__harbor__move_task(task_id, action="escalate_to_user", note="missing ## Verification Probes section")` and stop. Under `## Related Tests`, each non-empty bullet line is an existing test to also run; treat a lone `none` as empty. A bullet annotated `(update: ...)` should already have been updated by the worker during implementation — you only run it here.
 
-3. **Probe target reachability first.** Run `python scripts/shared/probe_target.py` from the worktree root. The runtime comes from `.harbor/runtime-target.json` — the repo default, or a worktree-local override the worker wrote if `## Worker Instructions` named a non-local target. If exit != 0, append the failure to `<worktree>/.harbor/execute.md` and emit `blocked classification=env`. Do NOT run task probes against an unreachable target.
-
-4. **Run each probe.** For each parsed command:
+3. **Build first — always.** Read `harbor.build` from the repo's `harbor.yml` (the `harbor:` mapping). If it is set, run it once through the runtime target:
    ```
-   python scripts/shared/target_runtime.py run -- <probe command>
+   python scripts/shared/target_runtime.py run -- <harbor.build command>
+   ```
+   This kills the stale running app and rebuilds (e.g. pyinstaller), or is a no-op for a `python main.py` project. If `harbor.build` is unset or empty, skip this step. On a non-zero exit, append a failure record to `<worktree>/.harbor/execute.md`, emit `blocked classification=build`, do NOT call `move_task`, and stop — never test against a failed build.
+
+4. **Probe target reachability.** Run `python scripts/shared/probe_target.py` from the worktree root. The runtime comes from `.harbor/runtime-target.json` — the repo default, or a worktree-local override the worker wrote if `## Worker Instructions` named a non-local target. If exit != 0, append the failure to `<worktree>/.harbor/execute.md` and emit `blocked classification=env`. Do NOT run tests against an unreachable target.
+
+5. **Run each verification probe, then each related test.** For every command (probes first, then `## Related Tests`):
+   ```
+   python scripts/shared/target_runtime.py run -- <command>
    ```
    Capture stdout, stderr, and exit code.
 
-5. **On any non-zero exit:**
+6. **On any non-zero exit (probe or related test):**
    - Append a failure record to `<worktree>/.harbor/execute.md`:
      ```
-     === <UTC timestamp> probe failed ===
-     command: <probe command>
+     === <UTC timestamp> <probe|related test> failed ===
+     command: <command>
      exit: <code>
      stderr (last 20 lines):
      <stderr tail>
@@ -41,56 +47,36 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
    - Do NOT call `move_task` — the task stays in `Running`.
    - Stop. Hand control back to the worker so they can fix and retry.
 
-6. **On all probes passing:**
+7. **On everything passing:**
    - Append a success record to `<worktree>/.harbor/execute.md`:
      ```
-     === <UTC timestamp> all probes passed ===
-     <bulleted list of probe commands and exit codes>
-     ```
-   - Continue to step 7 before declaring victory.
-
-7. **Repo-default gate (optional).** Parse `## Run Repo Defaults` from the task description (case-insensitive).
-   - Treat `yes`, `y`, `true`, `1`, `on`, `enabled` as opt-in. Anything else (including a missing section) is opt-out — preserving backwards compat with tasks created before this header existed.
-   - **If opt-out:** skip to step 8.
-   - **If opt-in:** invoke the `build-and-test` skill (or follow its discovery + run steps inline). It reads the repo's documented build/test commands from `README.md`, `pyproject.toml`, `package.json`, `Makefile`, or CI config and runs each via `target-runtime-exec`. Do not re-run the task's `## Verification Probes` here — they already passed in step 4.
-   - **On any failure in build-and-test:**
-     - Append the failing command, exit code, and stderr tail to `<worktree>/.harbor/execute.md`:
-       ```
-       === <UTC timestamp> repo defaults failed ===
-       command: <command>
-       exit: <code>
-       stderr (last 20 lines):
-       <stderr tail>
-       ```
-     - Emit `blocked classification=acceptance`.
-     - Do NOT call `move_task` — the task stays in `Running`. Hand control back to the worker.
-   - **On all repo-default commands passing:** append a success record to `<worktree>/.harbor/execute.md`:
-     ```
-     === <UTC timestamp> repo defaults passed ===
-     <bulleted list of build-and-test commands and exit codes>
+     === <UTC timestamp> all checks passed ===
+     build: <harbor.build command, or "none">
+     probes: <bulleted list of probe commands and exit codes>
+     related: <bulleted list of related tests and exit codes, or "none">
      ```
 
 8. **Verification passed:**
-   - Print `verification passed` with the probe summary (and `+ repo defaults` if step 7 ran).
+   - Print `verification passed` with the build + probe + related-test summary.
    - Return control to the worker, who will call `mcp__harbor__move_task(task_id, action="move_forward")`.
 
 ## Hard Rules
 
-- Verify cannot decide to skip a probe. If the task author wrote a probe, you run it.
-- Verify cannot decide a probe "passed in spirit" if it exited non-zero. Exit code is law.
+- Verify cannot skip the build. If `harbor.build` is set, it runs every time, before tests. Verify cannot reinterpret it as skippable because "nothing relevant changed".
+- Verify cannot decide to skip a probe or a related test. If the task lists it, you run it. Exit code is law for all of them.
+- Verify cannot decide a check "passed in spirit" if it exited non-zero.
 - Verify never calls `move_task` itself — that is the worker's responsibility, gated on this skill's success report.
 - Verify writes to `<worktree>/.harbor/execute.md`, never to `.harbor/runtime-target.json` or any other shared file.
-- Verify cannot weaken the repo-defaults gate. If `## Run Repo Defaults` is `yes`, build-and-test MUST run and pass. Verify cannot reinterpret it as `no` because the suite is slow or some test "looks unrelated".
-- If the same probe has flaked across runs, do not paper over it — escalate so the user can either fix the probe or accept the flake explicitly.
+- If the same probe or related test has flaked across runs, do not paper over it — escalate so the user can either fix it or accept the flake explicitly.
 
 ## Output Contract
 
 Single trailing line, machine-readable:
 
-- Success (probes only): `harbor-verify task=<id> probes=<N> passed`
-- Success (probes + repo defaults): `harbor-verify task=<id> probes=<N> passed repo_defaults=passed`
+- Success: `harbor-verify task=<id> build=<ok|none> probes=<N> related=<M> passed`
+- Build failure: `harbor-verify task=<id> build=failed`
 - Probe failure: `harbor-verify task=<id> probes=<N> failed=<idx> exit=<code>`
-- Repo-default failure: `harbor-verify task=<id> probes=<N> passed repo_defaults=failed`
+- Related-test failure: `harbor-verify task=<id> related=<M> failed=<idx> exit=<code>`
 - Escalation: `harbor-verify task=<id> escalated reason=<short>`
 
-These lines are what `harbor-task-worker` greps for to decide whether to call `move_task`. Any line that does not end in `passed` (with optional `repo_defaults=passed`) is a no-advance signal.
+These lines are what `harbor-task-worker` greps for to decide whether to call `move_task`. Any line that does not end in `passed` is a no-advance signal.

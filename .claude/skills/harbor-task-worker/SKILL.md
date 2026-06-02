@@ -24,10 +24,12 @@ The task description carries fixed sections from the sweep step:
 
 - `## Acceptance Criteria` — bullets describing what success looks like.
 - `## Verification Probes` — one shell command per bullet line. These run via `target-runtime-exec`.
+- `## Related Tests` — existing tests to run alongside this task's probe (or `none`). A bullet annotated `(update: <what must change>)` means this task makes that test stale: you must UPDATE it as part of your work (see "Do the Work"), justified against `## Acceptance Criteria` — never just weaken it to pass.
 - `## Worker Instructions` — optional per-task instructions, such as an exclusive resource to claim, a non-local runtime target to use, or special task-scoped guidance.
-- `## Run Repo Defaults` — optional `yes`/`no` toggle. You don't act on this directly; `harbor-task-verify` reads it during the Running→Review gate to decide whether to also invoke `build-and-test` after the probes pass.
 
-Parse each by header. If `## Acceptance Criteria` or `## Verification Probes` is missing, stop and `mcp__harbor__move_task(task_id, action="escalate_to_user")` with a short note explaining which section is missing. Do not attempt the work without those two. `## Worker Instructions` and `## Run Repo Defaults` are optional — proceed without them.
+Parse each by header. If `## Acceptance Criteria` or `## Verification Probes` is missing, stop and `mcp__harbor__move_task(task_id, action="escalate_to_user")` with a short note explaining which section is missing. Do not attempt the work without those two. `## Related Tests` (`none` ok) and `## Worker Instructions` are optional — proceed without them.
+
+Note: the project **build** is not a task section — it lives in `harbor.yml` as `harbor.build`, and `harbor-task-verify` runs it for you before tests. You do not run the build yourself.
 
 ## Runtime Target
 
@@ -46,14 +48,16 @@ If `## Worker Instructions` says `none` or names no runtime target, do nothing h
 1. Read the task description's main body (above the section headers) for context.
 2. Read the relevant repo files. Use the same care you would for any implementation: explore, plan internally, then edit.
 3. Implement only what the task describes. Resist scope creep — additional work goes into a follow-up task, not this one.
-4. Commit on the Harbor-assigned branch. Commit messages should reference the task ID.
+4. **Write the task's test.** If `## Verification Probes` names a test that does not exist yet (e.g. a new `pytest tests/test_<x>.py::test_<y>`), create it from `## Acceptance Criteria` so the probe has something to run.
+5. **Update stale tests.** For each `## Related Tests` bullet flagged `(update: ...)`, change that test to match the behavior this task alters — justified against `## Acceptance Criteria` and visible in your commit. Never weaken or delete a test just to make it green.
+6. Commit on the Harbor-assigned branch. Commit messages should reference the task ID.
 
 ## Hand Off to Verification
 
 When implementation is complete:
 
-1. Invoke the `harbor-task-verify` skill (or follow its steps inline). It runs each `## Verification Probes` bullet via `target-runtime-exec` and hard-blocks on any failure.
-2. If verify reports `blocked classification=acceptance`, fix the failure or stop and escalate. Do NOT move the task to Review with failing probes.
+1. Invoke the `harbor-task-verify` skill (or follow its steps inline). It runs the build (always, from `harbor.yml`), then each `## Verification Probes` and `## Related Tests` command via `target-runtime-exec`, and hard-blocks on any failure.
+2. If verify reports `blocked` (classification `build`, `env`, or `acceptance`), fix the failure or stop and escalate. Do NOT move the task to Review while any check fails.
 3. If verify reports success, move the task: `mcp__harbor__move_task(task_id, action="move_forward")`.
 4. Confirm the new status with `mcp__harbor__get_task(task_id)` — expect `Review`.
 
@@ -61,6 +65,7 @@ When implementation is complete:
 
 - Do not skip the header parse, even if the task description "looks complete."
 - Do not invent verification probes. The task author chose specific probes for a reason.
-- Do not move the task forward if any probe fails. The whole point of this workflow is to physically prevent green-light lying.
+- Do not move the task forward if the build, any probe, or any related test fails. The whole point of this workflow is to physically prevent green-light lying.
+- Do not weaken or delete a related test to make it pass. If a `## Related Tests` entry is flagged `(update: ...)`, change it to match the new intended behavior, justified against `## Acceptance Criteria`; if it fails for any other reason, fix the code, not the test.
 - Do not touch other tasks, other worktrees, or the Harbor board outside this task.
 - If the task is escalated by you, write a clear `escalation_note` via `mcp__harbor__move_task(task_id, action="escalate_to_user", note="...")` so the user knows what to fix.
