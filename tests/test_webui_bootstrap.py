@@ -112,6 +112,37 @@ def test_second_visit_shows_bootstrapped_or_stale_when_project_files_change(tmp_
     assert "stale" in second.text
 
 
+def test_delete_project_untracks_it_and_removes_from_list(tmp_path: Path):
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    # Register into the (isolated) real global index so the app reads it back.
+    db = AgtxDb(project_db_p=None, global_db_p=ac.global_db_path())  # type: ignore[arg-type]
+    project = db.register_project(project_dir, name="Repo")
+
+    fake_tmux = MagicMock()
+    fake_tmux.has_session.return_value = False
+    fake_tmux.list_sessions.return_value = []
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        # No `projects=` -> the app reads Harbor's global index directly.
+        app = create_app(
+            project_dir,
+            autostart_worker=False,
+            runtime_config_path=tmp_path / "runtime.yml",
+        )
+        with TestClient(app) as client:
+            assert "Repo" in client.get("/").text
+
+            r = client.post(f"/projects/{project.id}/delete", follow_redirects=False)
+            assert r.status_code == 303
+            assert r.headers["location"] == "/"
+
+            assert "Repo" not in client.get("/").text
+            assert db.list_projects() == []
+
+            # Deleting again is a 404 (row already gone).
+            assert client.post(f"/projects/{project.id}/delete").status_code == 404
+
+
 def test_post_track_prompt_appears_for_new_unbootstrapped_project(
     tmp_path: Path,
     monkeypatch,

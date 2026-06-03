@@ -226,6 +226,10 @@
                   <input type="hidden" name="bootstrap" value="preview">
                   <button type="submit" {% if p.bootstrap_status == 'error' %}disabled{% endif %}>Set up workflow</button>
                 </form>
+                <form method="post" action="/projects/{{ p.project.id }}/delete" class="inline"
+                      onsubmit="return confirm('Untrack {{ p.project.name }}? This removes it from Harbor\'s project list (does not delete files on disk).');">
+                  <button type="submit" class="danger">Delete</button>
+                </form>
               </div>
             </div>
           {% endfor %}

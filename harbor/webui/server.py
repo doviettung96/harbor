@@ -828,6 +828,20 @@ def create_app(
         project = _register_project_from_path(project_path, project_name)
         return RedirectResponse(f"/projects/{project.id}?tracked=1", status_code=303)
 
+    @app.post("/projects/{project_id}/delete")
+    async def action_project_delete(project_id: str) -> RedirectResponse:
+        """Untrack a project: drop its global index row + per-project DB.
+
+        Does not delete the project's files on disk — only Harbor's record of
+        it. Used to clear stale/ghost entries from the project list.
+        """
+        db = AgtxDb(project_db_p=Path("__global_only__.db"), global_db_p=global_db_path())
+        if not db.delete_project(project_id):
+            raise HTTPException(404, f"project {project_id!r} not found")
+        if state.selected_project_id == project_id:
+            state.selected_project_id = None
+        return RedirectResponse("/", status_code=303)
+
     @app.get("/projects/init/browse", response_class=HTMLResponse)
     async def project_folder_browser(
         request: Request,
