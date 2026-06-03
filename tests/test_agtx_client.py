@@ -210,6 +210,28 @@ def test_register_project_is_idempotent_for_same_path(tmp_path, monkeypatch):
     assert rows[0].name == "Second"
 
 
+def test_delete_project_removes_row_and_project_db(tmp_path, monkeypatch):
+    from harbor import agtx_client as ac
+
+    fake_config = tmp_path / "agtx-config"
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: fake_config)
+
+    db = ac.AgtxDb(project_db_p=None, global_db_p=ac.global_db_path())  # type: ignore[arg-type]
+    project = db.register_project(project_dir, name="Repo")
+    project_db = fake_config / "projects" / f"{ac.hash_project_path(project.path)}.db"
+    assert project_db.exists()
+
+    assert db.delete_project(project.id) is True
+    assert db.list_projects() == []
+    assert not project_db.exists()
+
+    # Idempotent / unknown id -> False, no error.
+    assert db.delete_project(project.id) is False
+    assert db.delete_project("no-such-id") is False
+
+
 # ---- AgtxDb.is_initialized + missing-file safety --------------------------
 
 

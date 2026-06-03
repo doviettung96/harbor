@@ -287,7 +287,13 @@ def ensure_harbor_data_migrated() -> MigrationReport:
     dest = harbor_data_dir()
     source_index = source / "index.db"
     dest_index = dest / "index.db"
-    if dest_index.exists() or not source_index.exists():
+    if not source_index.exists():
+        return MigrationReport()
+    # Treat an existing-but-empty Harbor index (0 projects) as not-yet-migrated.
+    # An empty index.db can be created by an earlier launch before any legacy
+    # agtx data was importable; guarding on mere existence would then wedge
+    # migration off permanently and Harbor would show zero projects.
+    if dest_index.exists() and _read_project_paths(dest_index):
         return MigrationReport()
 
     dest_projects = dest / "projects"
@@ -952,6 +958,31 @@ class AgtxDb:
             default_agent=default_agent,
             last_opened=now,
         )
+
+    def delete_project(self, project_id: str) -> bool:
+        """Remove a project from Harbor's global index and drop its per-project DB.
+
+        Untracks the project: deletes its `projects` row and unlinks the
+        `projects/<hash>.db` file keyed off the row's stored path. Does NOT
+        touch the project's files on disk. Returns True if a row was removed.
+        """
+        conn = self._open_global_create()
+        try:
+            row = conn.execute(
+                "SELECT path FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            stored_path = row["path"]
+            conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+        finally:
+            conn.close()
+        db_path = harbor_data_dir() / "projects" / f"{hash_project_path(stored_path)}.db"
+        try:
+            db_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # leaving an orphan db file is harmless; the row is what matters
+        return True
 
 
 # ---- Row decoders ---------------------------------------------------------
