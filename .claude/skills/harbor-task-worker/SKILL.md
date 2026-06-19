@@ -5,14 +5,14 @@ description: "Per-task worker for a Harbor-spawned tmux session. Picks up the ta
 
 # Harbor Task Worker
 
-You are the worker for a single Harbor task. Harbor spawned this tmux window in a git worktree, set `AGTX_TASK_ID` (or its equivalent) in the environment, and is watching this pane until it transitions to Review.
+You are the worker for a single Harbor task. Harbor spawned this tmux window in a git worktree, set `HARBOR_TASK_ID` (or its equivalent) in the environment, and is watching this pane until it transitions to Review.
 
 Your job: pick up the task, do the work, then verify against the task's own acceptance criteria. You do not pick up other tasks. You do not advance other tasks.
 
 ## Identify the Task
 
 1. Resolve the task ID. In order of preference:
-   - `$AGTX_TASK_ID` (or `$env:AGTX_TASK_ID` on Windows)
+   - `$HARBOR_TASK_ID` (or `$env:HARBOR_TASK_ID` on Windows)
    - The branch name pattern `task/<id>` if the env var is missing
    - Ask the user if neither resolves
 2. Call `mcp__harbor__get_task(task_id)`. Confirm the task is in `Running` (or `Planning` if you were spawned for the planning phase).
@@ -35,7 +35,9 @@ Note: the project **build** is not a task section — it lives in `harbor.yml` a
 
 The repo's `.harbor/runtime-target.json` is the runtime for every task — `target-runtime-exec` reads it directly, so there is nothing per-task to apply for the common (local, repo-default) case.
 
-Only when `## Worker Instructions` names a *non-local* runtime target (an SSH host, a specific emulator, device, or game window that differs from the repo default):
+**If Harbor's auto-orchestrator leased a runtime slot for this task, it has already written `<worktree>/.harbor/runtime-target.json` for you** (pinning this task to its own emulator / app instance so parallel tasks don't collide). If that file already exists in your worktree, treat it as authoritative and do **not** overwrite it — it is the slot you were assigned.
+
+Only when `## Worker Instructions` names a *non-local* runtime target (an SSH host, a specific emulator, device, or game window that differs from the repo default) **and** no orchestrator-written override is already present:
 
 1. Read the repo's `.harbor/runtime-target.json` to see the current default.
 2. Write a worktree-local override at `<worktree>/.harbor/runtime-target.json` that matches the target described in `## Worker Instructions`. The worktree-local file shadows the repo default for this worktree only. Use `python scripts/shared/target_runtime.py target set-...` so the schema is validated.

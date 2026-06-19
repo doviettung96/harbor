@@ -19,7 +19,7 @@ review   = ".harbor/review.md"
 
 # Slash commands the orchestrator types into the pane on each forward
 # transition. The {task_id} placeholder is the Harbor task UUID; the worker
-# skill reads it (or $AGTX_TASK_ID) to fetch the task via MCP.
+# skill reads it (or $HARBOR_TASK_ID) to fetch the task via MCP.
 [commands]
 planning = "/harbor-task-worker {task_id}"
 running  = "/harbor-task-worker {task_id}"

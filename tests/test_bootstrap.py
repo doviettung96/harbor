@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from harbor import agtx_client
-from harbor.bootstrap import PLUGIN_NAME, apply_bootstrap, build_plan, main
+from harbor.bootstrap import HARBOR_MCP_SERVER, PLUGIN_NAME, apply_bootstrap, build_plan, main
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +60,9 @@ def test_apply_bootstrap_to_blank_project_creates_required_files(tmp_path: Path)
     assert runtime["target"]["kind"] == "local"
     assert plan.project == project.resolve()
 
+    mcp = json.loads((project / ".mcp.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"]["harbor"] == HARBOR_MCP_SERVER
+
 
 def test_apply_bootstrap_is_idempotent(tmp_path: Path):
     project = tmp_path / "blank"
@@ -108,6 +111,29 @@ def test_existing_harbor_yml_is_merged_non_destructively(tmp_path: Path):
     assert data["custom"] == {"enabled": True}
     assert data["harbor"]["agent_command"] == "codex"
     assert data["harbor"]["plugin"] == PLUGIN_NAME
+
+
+def test_existing_mcp_json_is_merged_non_destructively(tmp_path: Path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "other": {"type": "stdio", "command": "other-server"},
+                }
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    apply_bootstrap(project)
+
+    data = json.loads((project / ".mcp.json").read_text(encoding="utf-8"))
+    assert data["mcpServers"]["other"] == {"type": "stdio", "command": "other-server"}
+    assert data["mcpServers"]["harbor"] == HARBOR_MCP_SERVER
 
 
 def test_existing_runtime_target_is_preserved(tmp_path: Path):

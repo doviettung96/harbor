@@ -112,6 +112,23 @@ def test_second_visit_shows_bootstrapped_or_stale_when_project_files_change(tmp_
     assert "stale" in second.text
 
 
+def test_complete_project_missing_a_new_artifact_reads_stale_not_unbootstrapped(
+    tmp_path: Path,
+):
+    """A fully-bootstrapped project that only lacks a newly-added bootstrap
+    artifact (e.g. .mcp.json) is stale, not 'not bootstrapped'."""
+    project_dir = tmp_path / "blank"
+    project_dir.mkdir()
+    with _client_for_project(tmp_path, project_dir) as client:
+        client.post("/projects/p1/bootstrap", follow_redirects=True)
+        (project_dir / ".mcp.json").unlink()
+        page = client.get("/projects/p1")
+
+    assert page.status_code == 200
+    assert "stale" in page.text
+    assert "not bootstrapped" not in page.text
+
+
 def test_delete_project_untracks_it_and_removes_from_list(tmp_path: Path):
     project_dir = tmp_path / "repo"
     project_dir.mkdir()

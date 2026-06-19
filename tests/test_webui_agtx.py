@@ -742,31 +742,43 @@ def test_start_planning_session_launches_configured_agent_and_mutates_no_tasks(
     assert first.startswith("plan-default-")
     assert second.startswith("plan-default-")
     assert first != second
+    default_shell = app.state.harbor.runtime.cfg.default_shell
     fake_tmux.ensure_session.assert_any_call(
         first,
         str(tmp_path.resolve()),
-        default_shell=app.state.harbor.runtime.cfg.default_shell,
+        default_shell=default_shell,
     )
-    fake_tmux.send_keys.assert_any_call(
+    fake_tmux.send_keys_literal.assert_any_call(
         first,
         "",
-        "codex --ask-for-approval never",
+        server_mod._planning_launcher(
+            str(tmp_path.resolve()),
+            ["codex", "--ask-for-approval", "never"],
+            default_shell,
+        ),
+        enter=True,
     )
     assert memdb.list_tasks() == []
     assert memdb.pending_transition_requests() == []
 
 
-def test_start_planning_session_defaults_to_claude(app_client):
+def test_start_planning_session_defaults_to_claude(app_client, tmp_path: Path):
     client, _, fake_tmux = app_client
 
     r = client.post("/projects/default/planning-sessions", follow_redirects=False)
 
     assert r.status_code == 303
     session_name = r.headers["location"].split("planning=", 1)[1]
-    fake_tmux.send_keys.assert_called_with(
+    default_shell = client.app.state.harbor.runtime.cfg.default_shell
+    fake_tmux.send_keys_literal.assert_called_with(
         session_name,
         "",
-        "claude --dangerously-skip-permissions",
+        server_mod._planning_launcher(
+            str(tmp_path.resolve()),
+            ["claude", "--dangerously-skip-permissions"],
+            default_shell,
+        ),
+        enter=True,
     )
 
 
@@ -851,10 +863,15 @@ def test_start_planning_session_uses_selected_configured_agent_command(
 
     assert r.status_code == 303
     session_name = r.headers["location"].split("planning=", 1)[1]
-    fake_tmux.send_keys.assert_called_with(
+    fake_tmux.send_keys_literal.assert_called_with(
         session_name,
         "",
-        "codex --enable goals -m gpt-5.5",
+        server_mod._planning_launcher(
+            str(tmp_path.resolve()),
+            ["codex", "--enable", "goals", "-m", "gpt-5.5"],
+            app.state.harbor.runtime.cfg.default_shell,
+        ),
+        enter=True,
     )
 
 
@@ -887,11 +904,35 @@ def test_start_planning_session_falls_back_for_empty_unknown_or_unmapped_agent(
 
     assert empty.status_code == 303
     assert unknown.status_code == 303
-    sent_commands = [call.args[2] for call in fake_tmux.send_keys.call_args_list]
-    assert sent_commands == [
-        "claude --dangerously-skip-permissions",
-        "claude --dangerously-skip-permissions",
-    ]
+    expected = server_mod._planning_launcher(
+        str(tmp_path.resolve()),
+        ["claude", "--dangerously-skip-permissions"],
+        app.state.harbor.runtime.cfg.default_shell,
+    )
+    sent_commands = [call.args[2] for call in fake_tmux.send_keys_literal.call_args_list]
+    assert sent_commands == [expected, expected]
+
+
+def test_planning_launcher_folds_cwd_into_launch_line_with_bash():
+    # Regression: a manual session must carry its own `cd` in the launch line so
+    # a cold tmux server that swallows ensure_session's typed `cd` cannot strand
+    # the agent in ~ instead of the project (it used to send a bare command).
+    launcher = server_mod._planning_launcher(
+        r"D:\Projects\harbor",
+        ["claude", "--dangerously-skip-permissions"],
+        "C:/Program Files/Git/bin/bash.exe",
+    )
+    assert launcher == (
+        '"C:/Program Files/Git/bin/bash.exe" -lc '
+        "\"cd 'D:/Projects/harbor' && exec claude --dangerously-skip-permissions\""
+    )
+
+
+def test_planning_launcher_folds_cwd_without_bash():
+    launcher = server_mod._planning_launcher(
+        "/home/me/proj", ["codex", "resume"], None,
+    )
+    assert launcher == "cd /home/me/proj && exec codex resume"
 
 
 def test_kill_planning_session_invokes_tmux_kill(app_client):
@@ -1332,10 +1373,15 @@ def test_settings_saved_agent_command_controls_new_planning_sessions(
             assert r.status_code == 303
 
     session_name = r.headers["location"].split("planning=", 1)[1]
-    fake_tmux.send_keys.assert_called_with(
+    fake_tmux.send_keys_literal.assert_called_with(
         session_name,
         "",
-        "codex --no-alt-screen",
+        server_mod._planning_launcher(
+            str(tmp_path.resolve()),
+            ["codex", "--no-alt-screen"],
+            app.state.harbor.runtime.cfg.default_shell,
+        ),
+        enter=True,
     )
 
 

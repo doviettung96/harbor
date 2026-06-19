@@ -11,7 +11,7 @@ This skill is what makes "I distrust pytest" enforceable. It is ALSO the only sk
 
 ## Inputs
 
-- The active task ID (from `$AGTX_TASK_ID`, branch name, or asked).
+- The active task ID (from `$HARBOR_TASK_ID`, branch name, or asked).
 - The current worktree (where the task's branch is checked out).
 
 ## Steps

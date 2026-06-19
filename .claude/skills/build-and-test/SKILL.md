@@ -30,7 +30,7 @@ If a command cannot run because of the local environment, emit `blocked classifi
 
 ## Task-Scoped Probes and Related Tests
 
-When the worktree corresponds to a Harbor task (the env var `AGTX_TASK_ID` is set, or a task can be inferred from the current branch name), the per-task acceptance is non-negotiable.
+When the worktree corresponds to a Harbor task (the env var `HARBOR_TASK_ID` is set, or a task can be inferred from the current branch name), the per-task acceptance is non-negotiable.
 
 1. Read the task: `mcp__harbor__get_task(task_id)`.
 2. Parse the description for these fixed sections:

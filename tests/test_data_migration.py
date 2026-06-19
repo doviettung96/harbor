@@ -113,3 +113,33 @@ def test_launch_migrates_agtx_copy_to_harbor_owned_data_dir(tmp_path, monkeypatc
         source_db = agtx_config / rel
         assert source_db.is_file()
         assert source_db.read_bytes() == content
+
+
+def test_existing_but_empty_harbor_index_does_not_block_migration(tmp_path, monkeypatch):
+    """An empty index.db (0 projects) must not wedge migration off forever.
+
+    Regression: guarding only on `dest_index.exists()` let a stray empty index
+    (created by an earlier launch before agtx data was importable) permanently
+    skip migration, so Harbor showed zero projects despite a populated agtx.
+    """
+    agtx_config, harbor_config, _project_dirs = _seed_fake_agtx_config(tmp_path)
+    monkeypatch.setattr(ac, "agtx_config_dir", lambda: agtx_config)
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: harbor_config)
+
+    # Pre-create an existing-but-empty Harbor index (schema present, 0 projects).
+    harbor_config.mkdir(parents=True)
+    harbor_index = harbor_config / "index.db"
+    conn = sqlite3.connect(str(harbor_index))
+    init_test_db(conn, kind="global")
+    conn.commit()
+    conn.close()
+
+    report = ac.ensure_harbor_data_migrated()
+
+    assert report.empty is False
+    assert report.copied_global_db is True
+    projects = AgtxDb(
+        project_db_p=harbor_config / "unused.db",
+        global_db_p=harbor_index,
+    ).list_projects()
+    assert {project.name for project in projects} == {"alpha", "beta"}
