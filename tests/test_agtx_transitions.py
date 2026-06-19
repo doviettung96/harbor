@@ -76,6 +76,7 @@ def worker_factory(memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock):
         # choreography stays instant under MagicMock tmux.
         prompt_submit_delay_s: float = 0.0,
         prompt_render_timeout_s: float = 0.0,
+        resource_protocol: str = "",
     ) -> TransitionWorker:
         cfg = TransitionConfig(
             project_path=project_path or Path("/test/project"),
@@ -86,6 +87,7 @@ def worker_factory(memdb: AgtxDb, fake_tmux: MagicMock, fake_git: MagicMock):
             agent_ready_timeout_s=agent_ready_timeout_s,
             prompt_submit_delay_s=prompt_submit_delay_s,
             prompt_render_timeout_s=prompt_render_timeout_s,
+            resource_protocol=resource_protocol,
             # Tests opt in to PR-on-Review explicitly so move-to-review in
             # unrelated tests doesn't try to push a fake branch.
             pr_on_review=False,
@@ -701,7 +703,7 @@ def test_resume_dead_session_recreates_with_worktree_launcher(
     worktree_posix = str(worktree).replace("\\", "/")
     assert launcher.startswith('"C:/Program Files/Git/bin/bash.exe" -c "')
     assert f"cd '{worktree_posix}'" in launcher
-    assert "export AGTX_TASK_ID='t1'" in launcher
+    assert "export HARBOR_TASK_ID='t1'" in launcher
     assert "exec claude --continue --dangerously-skip-permissions" in launcher
     assert "harbor-task-worker" not in launcher
     assert memdb.get_task("t1").status == status
@@ -1436,8 +1438,8 @@ def test_pane_launcher_wraps_in_bash_when_default_shell_configured(
     assert line.startswith('"C:/Program Files/Git/bin/bash.exe" -c "')
     # cd to worktree (forward slashes)
     assert "cd '" in line and "/.worktrees/" in line
-    # export AGTX_TASK_ID
-    assert "export AGTX_TASK_ID='t1abcd23'" in line
+    # export HARBOR_TASK_ID
+    assert "export HARBOR_TASK_ID='t1abcd23'" in line
     # exec the agent
     assert "exec codex -m gpt-5.5" in line
 
@@ -1746,6 +1748,31 @@ def test_move_backward_review_to_running(memdb: AgtxDb, worker_factory):
 
     worker_factory().process_once()
     assert memdb.get_task("t1").status == "running"
+
+
+def test_move_backward_review_to_running_reinjects_running_prompt(
+    memdb: AgtxDb, fake_tmux: MagicMock, worker_factory,
+):
+    """Bouncing Review → Running re-injects the running-phase prompt (carrying the
+    resource-reservation protocol) so the agent re-acquires before re-testing."""
+    fake_tmux.has_session.return_value = True
+    insert_test_task(memdb._connect_project(), _make_task(
+        id="t1", status="review", session_name="task-t1--p--do",
+    ))
+    memdb.create_transition_request(task_id="t1", action="move_backward")
+
+    worker = worker_factory(
+        inject_prompts=True,
+        resource_protocol="ACQUIRE-RUNTIME-FIRST-SENTINEL",
+    )
+    worker.process_once()
+
+    assert memdb.get_task("t1").status == "running"
+    sent = " ".join(
+        (c.args[2] if len(c.args) > 2 else "")
+        for c in fake_tmux.send_keys_literal.call_args_list
+    )
+    assert "ACQUIRE-RUNTIME-FIRST-SENTINEL" in sent
 
 
 def test_move_backward_from_done_records_error(memdb: AgtxDb, worker_factory):

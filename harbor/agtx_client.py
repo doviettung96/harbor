@@ -503,6 +503,50 @@ class TransitionRequest:
     claimed_by: str | None = None
 
 
+@dataclass
+class ResourcePermit:
+    """One leasable unit of the global runtime-resource pool (supply).
+
+    A permit is `free` until an agent acquires it for a task (`held`). For an
+    `instance` resource each instance is one permit carrying its own
+    `target_json` (the runtime-target subobject written into the task worktree
+    on acquire). For a `counted` resource the capacity is expanded into N
+    anonymous permits (no `instance_name`, no `target_json`) — acquiring `n`
+    units holds `n` of them.
+
+    The table is GLOBAL (`index.db`) so a physical resource cannot be
+    double-booked across the projects running in parallel.
+    """
+    permit_id: str
+    kind: str
+    instance_name: str | None
+    target_json: str | None
+    task_id: str | None
+    project_id: str | None
+    state: str
+    label: str | None
+    leased_at: str | None
+    released_at: str | None
+
+
+@dataclass
+class ResourceWaiter:
+    """One parked task waiting for `n` free permits of `kind` (demand queue).
+
+    Ordered by `enqueued_at` (FIFO). The supervisor's grant pass pops the head
+    waiter for a kind when permits free up, acquires for it, writes the worktree
+    override, and wakes the parked agent via tmux. `session_name` is the wake
+    target.
+    """
+    waiter_id: str
+    task_id: str
+    project_id: str
+    kind: str
+    n: int
+    session_name: str | None
+    enqueued_at: str
+
+
 # ---- DB wrapper -----------------------------------------------------------
 
 
@@ -780,6 +824,21 @@ class AgtxDb:
         ).fetchall()
         return [_tr_from_row(r) for r in rows]
 
+    def count_unprocessed_transitions(self, task_id: str, action: str) -> int:
+        """How many `action` requests for `task_id` are still in flight.
+
+        Counts rows whose `processed_at IS NULL` (queued, or claimed but not yet
+        finished). The orchestrator uses this so it won't reclaim a just-admitted
+        slot while its `move_forward` is still being executed by the worker.
+        """
+        conn = self._connect_project()
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM transition_requests "
+            "WHERE task_id = ? AND action = ? AND processed_at IS NULL",
+            (task_id, action),
+        ).fetchone()
+        return int(row["n"]) if row else 0
+
     def recent_transition_requests(
         self, task_id: str, *, limit: int = 10
     ) -> list[TransitionRequest]:
@@ -984,6 +1043,251 @@ class AgtxDb:
             pass  # leaving an orphan db file is harmless; the row is what matters
         return True
 
+    # ---- Resource pool: permits (supply) + waiters (demand) — global index.db
+    #
+    # GLOBAL because a permit maps to a physical resource (an emulator on a given
+    # adb port, an app instance on a port, a GPU unit) that must not be
+    # double-booked across the projects running in parallel. Every method opens
+    # the global DB via `_open_global_create`, which runs `_GLOBAL_SCHEMA_SQL`
+    # (CREATE TABLE IF NOT EXISTS), so the tables self-create on first use.
+
+    def reconcile_resources(
+        self, permits: list[tuple[str, str, str | None, str | None]]
+    ) -> None:
+        """Sync the permit table to the configured pool.
+
+        `permits` is a list of (permit_id, kind, instance_name, target_json).
+        Free rows are inserted for new permits and their kind/instance/target
+        refreshed (config may have changed). Free rows whose permit is no longer
+        configured are deleted. `held` rows are never touched — an in-use permit
+        outlives a config edit until its task releases it.
+        """
+        conn = self._open_global_create()
+        try:
+            ids = [pid for pid, _, _, _ in permits]
+            for pid, kind, instance_name, target_json in permits:
+                conn.execute(
+                    "INSERT OR IGNORE INTO resource_permits "
+                    "(permit_id, kind, instance_name, target_json, task_id, project_id, "
+                    " state, label, leased_at, released_at) "
+                    "VALUES (?, ?, ?, ?, NULL, NULL, 'free', NULL, NULL, NULL)",
+                    (pid, kind, instance_name, target_json),
+                )
+                conn.execute(
+                    "UPDATE resource_permits "
+                    "SET kind = ?, instance_name = ?, target_json = ? "
+                    "WHERE permit_id = ? AND state = 'free'",
+                    (kind, instance_name, target_json, pid),
+                )
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"DELETE FROM resource_permits "
+                    f"WHERE state = 'free' AND permit_id NOT IN ({placeholders})",
+                    ids,
+                )
+            else:
+                conn.execute("DELETE FROM resource_permits WHERE state = 'free'")
+        finally:
+            conn.close()
+
+    def list_permits(self) -> list[ResourcePermit]:
+        conn = self._open_global_create()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM resource_permits ORDER BY kind, permit_id"
+            ).fetchall()
+            return [_permit_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def count_free_permits(self, kind: str) -> int:
+        conn = self._open_global_create()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM resource_permits "
+                "WHERE kind = ? AND state = 'free'",
+                (kind,),
+            ).fetchone()
+            return int(row["n"]) if row else 0
+        finally:
+            conn.close()
+
+    def held_permits_for_task(self, task_id: str) -> list[ResourcePermit]:
+        conn = self._open_global_create()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM resource_permits "
+                "WHERE task_id = ? AND state = 'held' ORDER BY kind, permit_id",
+                (task_id,),
+            ).fetchall()
+            return [_permit_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def acquire_permits(
+        self, *, kind: str, n: int, task_id: str, project_id: str, label: str | None,
+    ) -> list[ResourcePermit] | None:
+        """Atomically hold `n` free permits of `kind` for a task (all-or-nothing).
+
+        Returns the held permits, or None if fewer than `n` were free (in which
+        case nothing is held). A single `BEGIN IMMEDIATE` transaction makes the
+        select-then-update atomic, so two concurrent grantors cannot grab the
+        same permit nor over-allocate a counted resource.
+        """
+        if n <= 0:
+            return []
+        conn = self._open_global_create()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT permit_id FROM resource_permits "
+                "WHERE kind = ? AND state = 'free' ORDER BY permit_id LIMIT ?",
+                (kind, n),
+            ).fetchall()
+            if len(rows) < n:
+                conn.execute("ROLLBACK")
+                return None
+            now = _now_rfc3339()
+            chosen = [r["permit_id"] for r in rows]
+            for pid in chosen:
+                conn.execute(
+                    "UPDATE resource_permits "
+                    "SET task_id = ?, project_id = ?, state = 'held', label = ?, "
+                    "leased_at = ?, released_at = NULL "
+                    "WHERE permit_id = ?",
+                    (task_id, project_id, label, now, pid),
+                )
+            placeholders = ",".join("?" for _ in chosen)
+            got = conn.execute(
+                f"SELECT * FROM resource_permits WHERE permit_id IN ({placeholders})",
+                chosen,
+            ).fetchall()
+            conn.execute("COMMIT")
+            return [_permit_from_row(r) for r in got]
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def release_permit(self, permit_id: str) -> None:
+        """Free a single permit, clearing its task binding."""
+        conn = self._open_global_create()
+        try:
+            conn.execute(
+                "UPDATE resource_permits "
+                "SET task_id = NULL, project_id = NULL, state = 'free', "
+                "label = NULL, released_at = ? "
+                "WHERE permit_id = ?",
+                (_now_rfc3339(), permit_id),
+            )
+        finally:
+            conn.close()
+
+    def release_permits_for_task(self, task_id: str) -> int:
+        """Free every permit held by a task. Returns how many were freed."""
+        conn = self._open_global_create()
+        try:
+            cur = conn.execute(
+                "UPDATE resource_permits "
+                "SET task_id = NULL, project_id = NULL, state = 'free', "
+                "label = NULL, released_at = ? "
+                "WHERE task_id = ? AND state = 'held'",
+                (_now_rfc3339(), task_id),
+            )
+            return int(cur.rowcount or 0)
+        finally:
+            conn.close()
+
+    # ---- waiters (FIFO demand queue) ----
+
+    def enqueue_waiter(
+        self, *, task_id: str, project_id: str, kind: str, n: int, session_name: str | None,
+    ) -> ResourceWaiter:
+        """Park a task waiting for `n` permits of `kind` (idempotent per task+kind).
+
+        Re-enqueuing the same (task, kind) refreshes `n`/`session_name` and keeps
+        the *original* enqueued_at so a retrying agent doesn't lose its place.
+        """
+        conn = self._open_global_create()
+        try:
+            existing = conn.execute(
+                "SELECT * FROM resource_waiters WHERE task_id = ? AND kind = ?",
+                (task_id, kind),
+            ).fetchone()
+            if existing is not None:
+                conn.execute(
+                    "UPDATE resource_waiters SET n = ?, session_name = ?, project_id = ? "
+                    "WHERE waiter_id = ?",
+                    (n, session_name, project_id, existing["waiter_id"]),
+                )
+                row = conn.execute(
+                    "SELECT * FROM resource_waiters WHERE waiter_id = ?",
+                    (existing["waiter_id"],),
+                ).fetchone()
+                return _waiter_from_row(row)
+            waiter_id = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO resource_waiters "
+                "(waiter_id, task_id, project_id, kind, n, session_name, enqueued_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (waiter_id, task_id, project_id, kind, n, session_name, _now_rfc3339()),
+            )
+            row = conn.execute(
+                "SELECT * FROM resource_waiters WHERE waiter_id = ?", (waiter_id,)
+            ).fetchone()
+            return _waiter_from_row(row)
+        finally:
+            conn.close()
+
+    def list_waiters(self) -> list[ResourceWaiter]:
+        """All waiters in FIFO order (oldest park first)."""
+        conn = self._open_global_create()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM resource_waiters ORDER BY enqueued_at, waiter_id"
+            ).fetchall()
+            return [_waiter_from_row(r) for r in rows]
+        finally:
+            conn.close()
+
+    def waiter_position(self, task_id: str, kind: str) -> int:
+        """1-based position of (task, kind) within its kind's FIFO queue (0 if absent)."""
+        conn = self._open_global_create()
+        try:
+            rows = conn.execute(
+                "SELECT task_id FROM resource_waiters WHERE kind = ? "
+                "ORDER BY enqueued_at, waiter_id",
+                (kind,),
+            ).fetchall()
+            for idx, r in enumerate(rows, start=1):
+                if r["task_id"] == task_id:
+                    return idx
+            return 0
+        finally:
+            conn.close()
+
+    def delete_waiter(self, waiter_id: str) -> None:
+        conn = self._open_global_create()
+        try:
+            conn.execute("DELETE FROM resource_waiters WHERE waiter_id = ?", (waiter_id,))
+        finally:
+            conn.close()
+
+    def delete_waiters_for_task(self, task_id: str) -> int:
+        conn = self._open_global_create()
+        try:
+            cur = conn.execute(
+                "DELETE FROM resource_waiters WHERE task_id = ?", (task_id,)
+            )
+            return int(cur.rowcount or 0)
+        finally:
+            conn.close()
+
 
 # ---- Row decoders ---------------------------------------------------------
 
@@ -1053,6 +1357,33 @@ def _tr_from_row(row: sqlite3.Row) -> TransitionRequest:
     )
 
 
+def _permit_from_row(row: sqlite3.Row) -> ResourcePermit:
+    return ResourcePermit(
+        permit_id=row["permit_id"],
+        kind=row["kind"],
+        instance_name=_row_get(row, "instance_name"),
+        target_json=_row_get(row, "target_json"),
+        task_id=_row_get(row, "task_id"),
+        project_id=_row_get(row, "project_id"),
+        state=row["state"],
+        label=_row_get(row, "label"),
+        leased_at=_row_get(row, "leased_at"),
+        released_at=_row_get(row, "released_at"),
+    )
+
+
+def _waiter_from_row(row: sqlite3.Row) -> ResourceWaiter:
+    return ResourceWaiter(
+        waiter_id=row["waiter_id"],
+        task_id=row["task_id"],
+        project_id=row["project_id"],
+        kind=row["kind"],
+        n=int(_row_get(row, "n", 1) or 1),
+        session_name=_row_get(row, "session_name"),
+        enqueued_at=row["enqueued_at"],
+    )
+
+
 # ---- Schema bootstrap helper (test-only) ----------------------------------
 
 # Harbor-owned project schema. Tests also use it to build in-memory DBs.
@@ -1117,6 +1448,31 @@ CREATE TABLE IF NOT EXISTS running_agents (
     status TEXT NOT NULL,
     FOREIGN KEY (project_id) REFERENCES projects(id)
 );
+
+CREATE TABLE IF NOT EXISTS resource_permits (
+    permit_id     TEXT PRIMARY KEY,   -- "<kind>/<instance>" or "<kind>#<index>"; globally unique
+    kind          TEXT NOT NULL,      -- resource kind (emulator, gpu_gb, ...)
+    instance_name TEXT,               -- instance name (NULL for counted permits)
+    target_json   TEXT,               -- runtime-target `target` subobject (NULL ⇒ no override)
+    task_id       TEXT,               -- NULL when free
+    project_id    TEXT,
+    state         TEXT NOT NULL,      -- 'free' | 'held'
+    label         TEXT,               -- task short-id / branch holding the permit
+    leased_at     TEXT,
+    released_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_permits_kind_state ON resource_permits(kind, state);
+
+CREATE TABLE IF NOT EXISTS resource_waiters (
+    waiter_id    TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    project_id   TEXT NOT NULL,
+    kind         TEXT NOT NULL,      -- kind of permit awaited
+    n            INTEGER NOT NULL DEFAULT 1,
+    session_name TEXT,               -- tmux wake target
+    enqueued_at  TEXT NOT NULL       -- park time → FIFO ordering
+);
+CREATE INDEX IF NOT EXISTS idx_waiters_kind ON resource_waiters(kind, enqueued_at);
 """
 
 

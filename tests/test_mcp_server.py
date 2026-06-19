@@ -57,7 +57,7 @@ def project_db(tmp_path: Path, monkeypatch) -> tuple[Project, AgtxDb]:
     return project, AgtxDb(project_db_p=db_path, global_db_p=ac.global_db_path())
 
 
-def test_tools_list_registers_exact_13_tool_names():
+def test_tools_list_registers_exact_tool_names():
     mcp = create_mcp_server(HarborMcpService(tmux=MagicMock()))
     result = mcp.list_tools()
     if inspect.isawaitable(result):

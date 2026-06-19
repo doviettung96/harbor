@@ -13,6 +13,7 @@ from typing import Iterable
 import yaml
 
 from . import agtx_client
+from .agtx_transitions import AUTO_ORCHESTRATOR_HEADER, replace_markdown_section
 
 
 PLUGIN_NAME = "harbor-workflow-template"
@@ -37,6 +38,18 @@ RUNTIME_TARGET_LOCAL = {
     "target": {
         "kind": "local",
     },
+}
+
+
+# Project-scoped registration for Harbor's MCP server. Written into the
+# downstream project's `.mcp.json` so Harbor is available only in bootstrapped
+# projects (never globally) and travels with the repo via git. The launch
+# command stays portable on purpose -- `python -m harbor mcp-serve` rather than
+# an absolute interpreter path -- because `.mcp.json` is shared across machines.
+HARBOR_MCP_SERVER = {
+    "type": "stdio",
+    "command": "python",
+    "args": ["-m", "harbor", "mcp-serve"],
 }
 
 
@@ -147,6 +160,7 @@ def build_plan(
     deploy_skills: bool = True,
     write_harbor_yml: bool = True,
     write_runtime_target: bool = True,
+    write_mcp_json: bool = True,
 ) -> BootstrapPlan:
     """Return the file-level bootstrap plan for *project* without applying it."""
 
@@ -200,6 +214,8 @@ def build_plan(
         operations.append(_harbor_yml_operation(project_path / "harbor.yml"))
     if write_runtime_target:
         operations.append(_runtime_target_operation(project_path / ".harbor" / "runtime-target.json"))
+    if write_mcp_json:
+        operations.append(_mcp_json_operation(project_path / ".mcp.json"))
 
     return BootstrapPlan(project=project_path, operations=tuple(operations))
 
@@ -294,6 +310,27 @@ def _runtime_target_operation(path: Path) -> BootstrapOperation:
     )
 
 
+def _mcp_json_operation(path: Path) -> BootstrapOperation:
+    data: dict[str, object]
+    if path.exists():
+        loaded = json.loads(path.read_text(encoding="utf-8") or "{}")
+        if not isinstance(loaded, dict):
+            raise ValueError(f"{path} must contain a JSON object")
+        data = dict(loaded)
+        servers = data.get("mcpServers") or {}
+        if not isinstance(servers, dict):
+            raise ValueError(f"{path}: mcpServers must be a JSON object when present")
+        servers = dict(servers)
+    else:
+        data = {}
+        servers = {}
+
+    servers["harbor"] = HARBOR_MCP_SERVER
+    data["mcpServers"] = servers
+    content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+    return _file_operation("harbor MCP server registration", path, content)
+
+
 def _display_path(path: Path, base: Path) -> str:
     try:
         return path.relative_to(base).as_posix()
@@ -309,6 +346,7 @@ def apply_bootstrap(
     deploy_skills: bool = True,
     write_harbor_yml: bool = True,
     write_runtime_target: bool = True,
+    write_mcp_json: bool = True,
     seed_tasks: bool = True,
 ) -> tuple[BootstrapPlan, tuple[BootstrapOperation, ...]]:
     plan = build_plan(
@@ -318,6 +356,7 @@ def apply_bootstrap(
         deploy_skills=deploy_skills,
         write_harbor_yml=write_harbor_yml,
         write_runtime_target=write_runtime_target,
+        write_mcp_json=write_mcp_json,
     )
     applied = plan.apply()
     if seed_tasks:
@@ -340,6 +379,10 @@ def seed_bootstrap_tasks(project: str | Path) -> tuple[tuple[agtx_client.Task, b
     db = agtx_client.AgtxDb(project_db_p=project_db, global_db_p=agtx_client.global_db_path())
     seeded: list[tuple[agtx_client.Task, bool]] = []
     for title, description in BOOTSTRAP_TASKS:
+        # Template-seeded setup tasks are opted OUT of auto-orchestration by
+        # default — they configure the project and shouldn't be auto-executed.
+        # The user can check the box on the board to enable any of them.
+        description = replace_markdown_section(description, AUTO_ORCHESTRATOR_HEADER, "skip")
         seeded.append(
             db.create_task_if_title_missing(
                 title=title,

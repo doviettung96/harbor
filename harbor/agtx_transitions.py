@@ -14,6 +14,7 @@ agent itself walk the task forward via the `harbor-task-worker` skill.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shlex
@@ -47,8 +48,16 @@ DEFAULT_AGENT_COMMAND: tuple[str, ...] = ("claude", "--dangerously-skip-permissi
 DEFAULT_BASE_BRANCH = "main"
 DEFAULT_WORKTREE_DIR = ".worktrees"
 SHARED_INSTRUCTIONS_REL = Path(".harbor") / "shared-instructions.md"
+RUNTIME_TARGET_REL = Path(".harbor") / "runtime-target.json"
 WORKER_INSTRUCTIONS_HEADER = "## Worker Instructions"
 CODEX_GOAL_HEADER = "## Codex Goal"
+# Per-task opt-out from auto-orchestrator admission. Absent ⇒ eligible (the
+# default — every task is a candidate). A truthy-skip value excludes the task so
+# template-seeded / not-meant-to-run tasks aren't auto-pulled into Planning.
+AUTO_ORCHESTRATOR_HEADER = "## Auto Orchestrator"
+_ORCHESTRATOR_OPTOUT_VALUES = frozenset(
+    {"skip", "off", "no", "false", "0", "exclude", "manual", "disabled", "ignore"}
+)
 _SECTION_HEADER_RE = re.compile(r"(?m)^##\s+.+$")
 
 # A pane whose last non-empty line matches this is sitting at a PowerShell or
@@ -80,17 +89,17 @@ DEFAULT_RESUME_COMMAND_BY_AGENT: dict[str, tuple[str, ...]] = {
 
 # Default per-phase prompts pushed into the agent pane after each forward
 # transition. They reference the harbor-task-worker / harbor-task-verify skills
-# and rely on `$AGTX_TASK_ID` being set in the pane env.
+# and rely on `$HARBOR_TASK_ID` being set in the pane env.
 DEFAULT_PHASE_PROMPTS: dict[str, str] = {
     "planning": (
-        "You are the worker for a Harbor task. $AGTX_TASK_ID is set in this "
+        "You are the worker for a Harbor task. $HARBOR_TASK_ID is set in this "
         "pane's environment. Invoke the harbor-task-worker skill — read the task "
         "description, parse the headers (Acceptance Criteria, Verification "
         "Probes), and PLAN the work. Do not implement yet. When "
         "the plan is ready, stop and wait for me to move the task to Running."
     ),
     "running": (
-        "Now in the Running phase. Implement the work for $AGTX_TASK_ID per the "
+        "Now in the Running phase. Implement the work for $HARBOR_TASK_ID per the "
         "plan and ## Acceptance Criteria. When implementation is complete, "
         "before calling verify: re-read your own diff "
         "(`git diff $(git merge-base HEAD main)...HEAD` in the worktree) and "
@@ -98,7 +107,7 @@ DEFAULT_PHASE_PROMPTS: dict[str, str] = {
         "commented-out code, unrelated changes, wrong files committed. Fix "
         "what you find. Then run the harbor-task-verify skill (which executes "
         "## Verification Probes via target-runtime-exec). If verify reports "
-        "passed, call mcp__harbor__move_task(task_id=\"$AGTX_TASK_ID\", "
+        "passed, call mcp__harbor__move_task(task_id=\"$HARBOR_TASK_ID\", "
         "action=\"move_forward\") yourself to advance the task to Review. If "
         "verify reports failed, fix the failure and re-run verify — never "
         "advance with failing probes."
@@ -191,6 +200,11 @@ class TransitionConfig:
     prompt_append: str = ""
     phase_prompts: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_PHASE_PROMPTS))
     inject_prompts: bool = True
+    # When non-empty, this text is appended to the `running`-phase prompt for
+    # every worker — the resource-reservation protocol that tells the agent to
+    # acquire a runtime permit (acquire_runtime) before its build/probes. Set by
+    # the webui only when the global pool (`harbor.resources`) is non-empty.
+    resource_protocol: str = ""
     agent_ready_timeout_s: float = 20.0
     # Prompt-submit choreography. After the prompt body is typed into the agent
     # pane, harbor waits for the pane to render it, pauses `prompt_submit_delay_s`,
@@ -587,7 +601,13 @@ class TransitionWorker:
         elif task.status == "running":
             self.db.update_task(task.id, status="planning")
         elif task.status == "review":
+            # Bounce back to implementation. Re-inject the running-phase prompt
+            # (which carries the resource-reservation protocol) so the agent
+            # re-acquires its runtime before it tests again — its permit was
+            # released when the task entered Review.
             self.db.update_task(task.id, status="running")
+            task.status = "running"
+            self._inject_phase_prompt(task, phase="running")
         elif task.status == "done":
             # Done is terminal: the session is gone, the worktree is removed.
             # There is no coherent way to rewind Done → Review.
@@ -666,6 +686,12 @@ class TransitionWorker:
             branch=branch, base_branch=self.config.base_branch,
         )
 
+        # 1a. (No runtime-target override at spawn.) Under the agent-driven
+        #     resource model the worker reserves its runtime (emulator / app
+        #     instance / GPU) at the *test* boundary via the acquire_runtime MCP
+        #     tool — Harbor writes the granted instance's target into this
+        #     worktree's .harbor/runtime-target.json at that point, not here.
+
         # 2. Copy gitignored files (e.g. .env) from the main repo into the worktree.
         self._copy_files_into_worktree(worktree_path)
 
@@ -687,7 +713,7 @@ class TransitionWorker:
         )
 
         # 5. Type a SINGLE line into the pane that works regardless of shell:
-        #    `"<bash>" -c "cd <worktree> && export AGTX_TASK_ID=<id> && exec <agent>"`.
+        #    `"<bash>" -lc "cd <worktree> && export HARBOR_TASK_ID=<id> && exec <agent>"`.
         #    cmd.exe / PowerShell / bash all forward this to bash.exe, which
         #    then runs cd + export + exec in one go. Avoids the "pane shell is
         #    cmd.exe so `export` fails" class of bug entirely.
@@ -734,10 +760,21 @@ class TransitionWorker:
         """Build a single pane command that works in any shell.
 
         When `default_shell` is configured (typically Git Bash on Windows), we
-        wrap with `"<bash>" -c "..."`. cmd.exe and PowerShell will both
+        wrap with `"<bash>" -lc "..."`. cmd.exe and PowerShell will both
         forward this correctly to bash.exe; bash will execute the inner
         script. Inner script uses single-quoted values so cmd.exe's outer
         double-quote parsing doesn't conflict.
+
+        The `-l` (login) flag is load-bearing: the tmux server is typically
+        started without the MSYS bin dirs on PATH, and a *nested* non-login
+        `bash -c` (a child of the already-MSYS tmux process) inherits that
+        PATH verbatim — it does NOT re-add `/usr/bin`. That leaves coreutils
+        (`sed`/`dirname`/`uname`) missing, which breaks npm-installed agent
+        shims like codex's `#!/bin/sh` wrapper (it computes an empty basedir
+        and then `node`s a bogus path -> "Cannot find module"). A login shell
+        sources `/etc/profile`, which restores the full MSYS PATH regardless
+        of how the tmux server was launched. The trailing `cd` in the inner
+        script still wins over any `cd` the profile performs.
 
         When `default_shell` is None, fall back to typing the agent argv
         directly — assumes the pane shell is POSIX-y enough to handle `cd`
@@ -749,10 +786,10 @@ class TransitionWorker:
 
         worktree_for_bash = str(worktree).replace("\\", "/")
         cd_cmd = f"cd '{worktree_for_bash}'"
-        export_cmd = f"export AGTX_TASK_ID='{task_id}'"
+        export_cmd = f"export HARBOR_TASK_ID='{task_id}'"
         agent_quoted = " ".join(shlex.quote(p) for p in agent_argv)
         inner = f"{cd_cmd} && {export_cmd} && exec {agent_quoted}"
-        return f'"{bash}" -c "{inner}"'
+        return f'"{bash}" -lc "{inner}"'
 
     def _deploy_plugin_skills_to_worktree(
         self, worktree_path: Path, task: Task,
@@ -958,7 +995,7 @@ class TransitionWorker:
         """Type an export/set into the pane so the agent's child process inherits it."""
         # Works in bash, zsh, and Git Bash (the windows webview's expected default).
         # On native PowerShell the user can override agent_command to wrap with
-        # `$env:AGTX_TASK_ID=...; <cmd>` — out of scope for v1.
+        # `$env:HARBOR_TASK_ID=...; <cmd>` — out of scope for v1.
         line = f'export {name}={shlex.quote(value)}'
         try:
             self.tmux.send_keys(session, "", line)
@@ -1175,6 +1212,14 @@ class TransitionWorker:
                 f"{prompt_append}"
             )
             prompt = f"{prompt}\n\n{shared}" if prompt else shared
+        # The resource-reservation protocol rides on the running phase (the phase
+        # that builds/tests). Appended for every worker when a global pool exists.
+        if phase == "running" and self.config.resource_protocol:
+            prompt = (
+                f"{prompt}\n\n{self.config.resource_protocol}"
+                if prompt
+                else self.config.resource_protocol
+            )
         if not skill_command and not prompt:
             return
 
@@ -1391,6 +1436,46 @@ def _looks_like_shell_prompt(content: str) -> bool:
     return bool(_CMD_PROMPT_RE.match(last))
 
 
+def write_target_override(
+    project_path: Path, worktree_path: Path, target: dict | None
+) -> None:
+    """Write a runtime-target `target` into a worktree's override file.
+
+    Used when an agent acquires an `instance` resource (emulator / app instance /
+    device): the granted instance's `target` subobject is written into
+    `<worktree>/.harbor/runtime-target.json` so the worker, `target-runtime-exec`
+    and `harbor.build` route to that instance. Only the `target` subobject is
+    overridden — the repo's execution `mode` (local/ssh) and ssh settings are
+    preserved by starting from the repo's own config when present.
+
+    No-op when `target` is falsy (counted resources carry no target).
+    """
+    if not target:
+        return
+    repo_cfg_path = project_path / RUNTIME_TARGET_REL
+    config: dict
+    try:
+        if repo_cfg_path.exists():
+            config = json.loads(repo_cfg_path.read_text(encoding="utf-8"))
+            if not isinstance(config, dict):
+                config = {}
+        else:
+            config = {}
+    except (OSError, ValueError):
+        config = {}
+    config.setdefault("version", 1)
+    config.setdefault("mode", "local")
+    config["target"] = target
+
+    dst = worktree_path / RUNTIME_TARGET_REL
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
 def task_worker_instructions(task: Task) -> str:
     """Return the task's optional `## Worker Instructions` section."""
     instructions = extract_markdown_section(task.content_text(), WORKER_INSTRUCTIONS_HEADER)
@@ -1401,6 +1486,18 @@ def task_codex_goal_enabled(task: Task) -> bool:
     """Return whether this task opts into Codex's experimental /goal command."""
     raw = extract_markdown_section(task.content_text(), CODEX_GOAL_HEADER).strip().lower()
     return raw in {"1", "true", "yes", "on", "enabled", "enable"}
+
+
+def task_orchestrator_optout(task: Task) -> bool:
+    """True if this task has opted OUT of auto-orchestrator admission.
+
+    Default (no ``## Auto Orchestrator`` section, or a non-skip value) ⇒ eligible.
+    A skip value (``skip``/``off``/``no``/...) excludes the task — used for
+    template-seeded tasks that shouldn't be auto-executed, or any task the user
+    unchecks on the board.
+    """
+    raw = extract_markdown_section(task.content_text(), AUTO_ORCHESTRATOR_HEADER).strip().lower()
+    return raw in _ORCHESTRATOR_OPTOUT_VALUES
 
 
 def _is_codex_argv(argv: Sequence[str]) -> bool:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +27,9 @@ TOOL_NAMES: tuple[str, ...] = (
     "create_tasks_batch",
     "update_task",
     "delete_task",
+    "list_resources",
+    "acquire_runtime",
+    "release_runtime",
 )
 
 VALID_MOVE_ACTIONS = frozenset({
@@ -318,6 +322,134 @@ class HarborMcpService:
         db.delete_task(task_id)
         return {"task_id": task_id, "deleted": True}
 
+    # ---- runtime resources (global pool) -------------------------------
+
+    def list_resources(self) -> dict[str, Any]:
+        """Per-kind summary of the global runtime pool: free/held + queue depth.
+
+        An agent calls this before ``acquire_runtime`` to pick the kind its tests
+        need and gauge contention.
+        """
+        db = self._global_db()
+        permits = db.list_permits()
+        waiters = db.list_waiters()
+        kinds: dict[str, dict[str, Any]] = {}
+        for permit in permits:
+            agg = kinds.setdefault(
+                permit.kind,
+                {"kind": permit.kind, "total": 0, "free": 0, "held": 0, "queued": 0,
+                 "instances": []},
+            )
+            agg["total"] += 1
+            agg["free" if permit.state == "free" else "held"] += 1
+            if permit.instance_name:
+                agg["instances"].append(permit.instance_name)
+        for waiter in waiters:
+            kinds.setdefault(
+                waiter.kind,
+                {"kind": waiter.kind, "total": 0, "free": 0, "held": 0, "queued": 0,
+                 "instances": []},
+            )["queued"] += 1
+        return {"resources": [kinds[k] for k in sorted(kinds)]}
+
+    def acquire_runtime(
+        self,
+        project_id: str,
+        task_id: str,
+        kind: str,
+        n: int = 1,
+    ) -> dict[str, Any]:
+        """Atomically hold `n` permits of `kind` for a task, or park it (FIFO).
+
+        Granted ⇒ the instance target is written into the task worktree's
+        runtime-target override and returned. Busy ⇒ the task is enqueued and the
+        agent should end its turn; the supervisor wakes it on grant.
+        """
+        if n <= 0:
+            raise ValueError("n must be >= 1")
+        project, db = self._project_db(project_id)
+        task = db.get_task(task_id)
+        if task is None:
+            raise ValueError(f"task not found: {task_id}")
+        lease_db = self._global_db()
+
+        # Idempotent: already holding enough of this kind ⇒ re-affirm the grant.
+        held = [p for p in lease_db.held_permits_for_task(task_id) if p.kind == kind]
+        if len(held) >= n:
+            return self._granted(project, task, held[:n], already_held=True)
+
+        label = task.branch_name or f"task/{task.id[:8]}"
+        permits = lease_db.acquire_permits(
+            kind=kind, n=n, task_id=task_id, project_id=project.id, label=label,
+        )
+        if permits is not None:
+            return self._granted(project, task, permits, already_held=False)
+
+        lease_db.enqueue_waiter(
+            task_id=task_id,
+            project_id=project.id,
+            kind=kind,
+            n=n,
+            session_name=task.session_name,
+        )
+        position = lease_db.waiter_position(task_id, kind)
+        return {
+            "status": "queued",
+            "kind": kind,
+            "n": n,
+            "position": position,
+            "message": (
+                f"No free {kind!r} permit. You are #{position} in line. End your "
+                "turn now and do nothing further — Harbor will message this "
+                "session when the resource is reserved for you."
+            ),
+        }
+
+    def release_runtime(
+        self,
+        project_id: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        """Free every permit held by a task and drop any pending waiter for it."""
+        lease_db = self._global_db()
+        released = lease_db.release_permits_for_task(task_id)
+        lease_db.delete_waiters_for_task(task_id)
+        return {"task_id": task_id, "released": released}
+
+    def _granted(
+        self, project: Project, task: Task, permits: list[Any], *, already_held: bool,
+    ) -> dict[str, Any]:
+        from .agtx_transitions import write_target_override
+
+        target = None
+        for permit in permits:
+            if permit.target_json:
+                try:
+                    target = json.loads(permit.target_json)
+                except (ValueError, TypeError):
+                    target = None
+                break
+        if target is not None and task.worktree_path:
+            write_target_override(
+                Path(strip_extended_length_prefix(project.path)),
+                Path(task.worktree_path),
+                target,
+            )
+        return {
+            "status": "granted",
+            "already_held": already_held,
+            "permits": [
+                {"permit_id": p.permit_id, "kind": p.kind, "instance": p.instance_name}
+                for p in permits
+            ],
+            "target": target,
+            "message": (
+                "Resource reserved. Its target is written to "
+                ".harbor/runtime-target.json. Run your build + probes + related "
+                "tests, then call release_runtime the instant they finish."
+            ),
+        }
+
 
 def allowed_actions(task: Task) -> list[str]:
     if task.status == "backlog":
@@ -423,6 +555,20 @@ def create_mcp_server(service: HarborMcpService | None = None) -> FastMCP:
     @mcp.tool()
     def delete_task(project_id: str, task_id: str) -> dict[str, Any]:
         return svc.delete_task(project_id=project_id, task_id=task_id)
+
+    @mcp.tool()
+    def list_resources() -> dict[str, Any]:
+        return svc.list_resources()
+
+    @mcp.tool()
+    def acquire_runtime(
+        project_id: str, task_id: str, kind: str, n: int = 1,
+    ) -> dict[str, Any]:
+        return svc.acquire_runtime(project_id=project_id, task_id=task_id, kind=kind, n=n)
+
+    @mcp.tool()
+    def release_runtime(project_id: str, task_id: str) -> dict[str, Any]:
+        return svc.release_runtime(project_id=project_id, task_id=task_id)
 
     return mcp
 

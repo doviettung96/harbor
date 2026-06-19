@@ -55,6 +55,70 @@
 </div>
 
 <div class="panel">
+  <h2>Auto-orchestrator</h2>
+  <div class="panel-body">
+    <p class="muted" style="margin-top: 0;">
+      When enabled, Harbor scans every project and auto-pulls <em>ready</em> Backlog tasks into
+      Planning. Agents then self-drive to Review; Done stays your manual acceptance gate.
+      Admission is resource-blind &mdash; workers reserve runtime (emulator / GPU / app instance)
+      at the test boundary from the global pool below.
+    </p>
+    <form method="post" action="/settings/orchestrator">
+      <label class="muted" style="display: block; margin-bottom: 8px;">
+        <input type="checkbox" name="enabled" value="1"
+               {% if cfg.auto_orchestrator_enabled %}checked{% endif %}>
+        Enable auto-orchestrator
+        <span class="pill {% if cfg.auto_orchestrator_enabled %}ok{% else %}warn{% endif %}">
+          {{ "ON" if cfg.auto_orchestrator_enabled else "OFF" }}
+        </span>
+      </label>
+
+      <label class="muted" for="orch_max">Max live agents (0 = unlimited)</label>
+      <input id="orch_max" type="number" min="0" name="max_live_agents"
+             value="{{ cfg.auto_orchestrator_max_live_agents }}"
+             style="display: block; margin: 4px 0 10px; width: 8em;">
+
+      <label class="muted" for="orch_resources">Runtime resource pool (JSON list of specs)</label>
+      <textarea id="orch_resources" name="resources" spellcheck="false"
+                placeholder='[
+  {"kind": "emulator", "instances": [
+    {"name": "emu-a", "target": {"kind": "emulator", "emulator": {"name": "ld-0", "adb_port": 5555}, "probe_command": "adb -s 127.0.0.1:5555 get-state"}},
+    {"name": "emu-b", "target": {"kind": "emulator", "emulator": {"name": "ld-1", "adb_port": 5557}}}
+  ]},
+  {"kind": "gpu_gb", "capacity": 16}
+]'>{{ orchestrator_resources_text }}</textarea>
+      <p class="muted" style="margin-top: 4px;">
+        <code>instance</code> specs (emulators, app instances) are discrete &mdash; each instance's
+        <code>target</code> is written into the holding task's worktree
+        <code>.harbor/runtime-target.json</code>. <code>capacity</code> specs (GPU, CPU) are fungible
+        units. Empty pool &rarr; no arbitration (tasks test against the repo's own runtime-target).
+      </p>
+      <div style="margin-top: 10px;">
+        <button type="submit">Save orchestrator settings</button>
+      </div>
+    </form>
+
+    {% set held = orchestrator_permits | selectattr("state", "equalto", "held") | list %}
+    {% if held %}
+      <h3 style="margin-bottom: 6px;">Held permits</h3>
+      <table style="width: 100%; font-size: 0.9em;">
+        {% for permit in held %}
+          <tr><td><code>{{ permit.permit_id }}</code></td><td>{{ permit.label or permit.task_id }}</td></tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+    {% if orchestrator_waiters %}
+      <h3 style="margin-bottom: 6px;">Parked (waiting for a resource)</h3>
+      <table style="width: 100%; font-size: 0.9em;">
+        {% for waiter in orchestrator_waiters %}
+          <tr><td><code>{{ waiter.kind }}</code> &times;{{ waiter.n }}</td><td>{{ waiter.task_id }}</td></tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="panel">
   <h2>Task worker options</h2>
   <div class="panel-body">
     <p class="muted" style="margin-top: 0;">

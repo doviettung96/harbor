@@ -197,3 +197,111 @@ def test_all_task_partial_uses_owning_project_websocket(all_client):
 
     assert r.status_code == 200
     assert 'data-ws-url="/projects/pb/ws/tmux/b-live"' in r.text
+
+
+# ---- auto-orchestrator UI -------------------------------------------------
+
+
+@pytest.fixture
+def orch_client(tmp_path: Path, monkeypatch):
+    """A client with an isolated global data dir so resource leases don't touch
+    the real index.db, plus an enabled orchestrator + a 2-slot pool in config."""
+    import harbor.agtx_client as ac
+    monkeypatch.setattr(ac, "harbor_data_dir", lambda: tmp_path / "gdata")
+
+    runtime_yml = tmp_path / "runtime.yml"
+    runtime_yml.write_text(
+        "default_profile: balanced\n"
+        "harbor:\n"
+        "  auto_orchestrator:\n"
+        "    enabled: true\n"
+        "    max_live_agents: 2\n"
+        "  resources:\n"
+        "    - kind: emulator\n"
+        "      instances:\n"
+        "        - name: emu-a\n"
+        "          target: {kind: emulator, emulator: {adb_port: 5555}}\n"
+        "        - name: emu-b\n"
+        "          target: {kind: emulator, emulator: {adb_port: 5557}}\n"
+        "    - kind: gpu_gb\n"
+        "      capacity: 4\n",
+        encoding="utf-8",
+    )
+
+    db_a = _make_db()
+    projects = [Project(id="pa", name="alpha", path=str(tmp_path / "alpha"), last_opened="2")]
+    fake_tmux = MagicMock()
+    fake_tmux.list_sessions.return_value = []
+    fake_tmux.capture_pane.return_value = ""
+    fake_tmux.has_session.return_value = False
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+        app = create_app(
+            tmp_path / "alpha",
+            projects=projects,
+            project_dbs={"pa": db_a},
+            autostart_worker=False,
+            runtime_config_path=runtime_yml,
+        )
+        with TestClient(app) as client:
+            yield client, db_a
+
+
+def test_settings_renders_orchestrator_panel_and_pool(orch_client):
+    client, _ = orch_client
+    r = client.get("/settings")
+    assert r.status_code == 200
+    assert "Auto-orchestrator" in r.text
+    assert "Runtime resource pool" in r.text
+    assert "emu-a" in r.text          # pool serialized into the textarea
+    assert "gpu_gb" in r.text         # counted spec too
+    assert 'name="enabled"' in r.text
+
+
+def test_board_shows_orchestrator_toggle(orch_client):
+    client, _ = orch_client
+    r = client.get("/projects/pa")
+    assert r.status_code == 200
+    assert "Auto-orchestrator" in r.text
+    assert 'action="/settings/orchestrator/toggle"' in r.text
+    assert "Turn off" in r.text       # currently ON
+
+
+def test_orchestrator_toggle_flips_enabled(orch_client):
+    client, _ = orch_client
+    r = client.post("/settings/orchestrator/toggle", data={"next": "/projects/pa"},
+                    follow_redirects=False)
+    assert r.status_code == 303
+    # After flipping, the board shows the OFF state / Turn on button.
+    board = client.get("/projects/pa")
+    assert "Turn on" in board.text
+
+
+def test_backlog_card_shows_candidate_checkbox_checked_by_default(orch_client):
+    client, db = orch_client
+    insert_test_task(db._connect_project(), _make_task(
+        id="cand0001", title="Wire up login", status="backlog", project_id="pa",
+    ))
+    r = client.get("/projects/pa")
+    assert r.status_code == 200
+    assert 'name="eligible"' in r.text          # checkbox rendered on the card
+    assert "orchestrator-eligibility" in r.text  # toggle form action
+    assert "checked" in r.text                   # eligible by default
+
+
+def test_toggle_opt_out_then_back_in(orch_client):
+    from harbor.agtx_transitions import task_orchestrator_optout
+
+    client, db = orch_client
+    insert_test_task(db._connect_project(), _make_task(
+        id="cand0002", title="Template task", status="backlog", project_id="pa",
+    ))
+    # Uncheck → form omits `eligible` → task opts out.
+    r = client.post("/projects/pa/tasks/cand0002/orchestrator-eligibility",
+                    data={}, follow_redirects=False)
+    assert r.status_code == 303
+    assert task_orchestrator_optout(db.get_task("cand0002")) is True
+    # Re-check → `eligible=1` → eligible again.
+    r = client.post("/projects/pa/tasks/cand0002/orchestrator-eligibility",
+                    data={"eligible": "1"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert task_orchestrator_optout(db.get_task("cand0002")) is False

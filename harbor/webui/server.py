@@ -29,12 +29,16 @@ from fastapi.templating import Jinja2Templates
 
 from ..agent import (
     Config,
+    ResourceInstance,
+    ResourceSpec,
     global_runtime_config_path,
     load_config,
     load_runtime_config,
     write_config,
     write_runtime_config,
 )
+from ..auto_orchestrator import run_admission
+from ..resource_broker import RESOURCE_PROTOCOL, reconcile_pool, run_grants
 from ..bootstrap import BootstrapPlan, apply_bootstrap, build_plan
 from ..agtx_client import (
     AgtxDb,
@@ -47,6 +51,7 @@ from ..agtx_client import (
     strip_extended_length_prefix,
 )
 from ..agtx_transitions import (
+    AUTO_ORCHESTRATOR_HEADER,
     CODEX_GOAL_HEADER,
     DEFAULT_AGENT_COMMAND,
     DEFAULT_BASE_BRANCH,
@@ -57,6 +62,7 @@ from ..agtx_transitions import (
     WORKER_INSTRUCTIONS_HEADER,
     replace_markdown_section,
     task_codex_goal_enabled,
+    task_orchestrator_optout,
     task_worker_instructions,
 )
 from ..orchestrator import write_tmux_config
@@ -166,6 +172,14 @@ class GlobalWebuiState:
         path = write_runtime_config(cfg, self.runtime.path)
         self.runtime = RuntimeSettings(cfg=cfg, path=path, source="global")
 
+    def lease_db(self) -> AgtxDb:
+        """A global-only AgtxDb for resource-lease operations.
+
+        Lease methods only touch the global index DB, so the placeholder
+        per-project path is never opened.
+        """
+        return AgtxDb(project_db_p=Path("__global_only__.db"), global_db_p=global_db_path())
+
     @property
     def transition_config(self) -> TransitionConfig:
         return _transition_config_for(self.current_project(), self.runtime.cfg, self.options)
@@ -240,7 +254,8 @@ class GlobalTransitionSupervisor:
 
     def process_once(self) -> int:
         total = 0
-        for ctx in self.state.refresh_projects():
+        contexts = self.state.refresh_projects()
+        for ctx in contexts:
             if not ctx.db_initialized:
                 continue
             try:
@@ -254,6 +269,30 @@ class GlobalTransitionSupervisor:
                 total += worker.process_once()
             except Exception:
                 log.exception("transition processing failed for project %s", ctx.project.id)
+        # Two independent subsystems, run in order each tick:
+        #   1. Resource broker — reconcile the pool (materialize permits, reap
+        #      dead holders/waiters) and grant freed permits to parked waiters.
+        #      Runs whenever a pool is configured, regardless of admission, so
+        #      manually-driven workers still acquire/park/wake on resources.
+        #   2. Auto-orchestrator — admission (auto-pull ready Backlog). Runs only
+        #      when enabled, and never touches resources.
+        cfg = self.state.runtime.cfg
+        if cfg.resources:
+            lease_db = self.state.lease_db()
+            try:
+                reconcile_pool(contexts, cfg, lease_db=lease_db)
+            except Exception:
+                log.exception("resource-broker reconcile failed")
+        if cfg.auto_orchestrator_enabled:
+            try:
+                run_admission(contexts, cfg)
+            except Exception:
+                log.exception("auto-orchestrator admission pass failed")
+        if cfg.resources:
+            try:
+                run_grants(contexts, lease_db=self.state.lease_db(), tmux=self.state.tmux)
+            except Exception:
+                log.exception("resource-broker grant pass failed")
         return total
 
     def _loop(self) -> None:
@@ -346,6 +385,10 @@ def create_app(
     state.supervisor = GlobalTransitionSupervisor(state)
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+    # Board cards show an auto-orchestrator candidate checkbox per task; checked
+    # ⇒ eligible (the default). Exposed as a filter so every render site (board,
+    # partial, all-board) can read it without threading a map through context.
+    templates.env.filters["orchestrator_eligible"] = lambda task: not task_orchestrator_optout(task)
     app = FastAPI(title="harbor (Harbor webview)", docs_url=None, redoc_url=None)
     app.state.harbor = state
     app.state.harbor_migration_report = migration_report
@@ -959,6 +1002,12 @@ def create_app(
                 cli_agent_override=state.options.agent_command is not None,
                 default_shell_text=cfg.default_shell or "",
                 plugin_text=cfg.harbor_plugin or "",
+                orchestrator_resources_text=json.dumps(
+                    [_resource_spec_to_jsonable(s) for s in cfg.resources],
+                    indent=2,
+                ) if cfg.resources else "",
+                orchestrator_permits=state.lease_db().list_permits(),
+                orchestrator_waiters=state.lease_db().list_waiters(),
             ),
         )
 
@@ -1182,14 +1231,20 @@ def create_app(
         ctx = state.get_project(project_id)
         session_name = _new_planning_session_name(ctx)
         argv = _planning_agent_argv(ctx, agent)
-        cmd = " ".join(shlex.quote(p) for p in argv)
+        # Fold the `cd` into the launch line (one atomic burst) rather than
+        # trusting ensure_session's separately-typed `cd` to have landed: on a
+        # cold tmux server that `cd` is lost and a bare agent command would open
+        # in the home dir, not the project. Mirrors the worker launcher.
+        launcher = _planning_launcher(
+            str(ctx.path), argv, state.runtime.cfg.default_shell,
+        )
         try:
             state.tmux.ensure_session(
                 session_name,
                 str(ctx.path),
                 default_shell=state.runtime.cfg.default_shell,
             )
-            state.tmux.send_keys(session_name, "", cmd)
+            state.tmux.send_keys_literal(session_name, "", launcher, enter=True)
         except Exception as exc:
             raise HTTPException(500, f"planning session launch failed: {exc}") from exc
         return RedirectResponse(
@@ -1269,6 +1324,42 @@ def create_app(
             plugin=None,
             prompt_append=prompt_append,
         )
+
+    @app.post("/settings/orchestrator")
+    async def action_settings_orchestrator(
+        enabled: str | None = Form(None),
+        max_live_agents: str = Form("0"),
+        resources: str = Form(""),
+    ) -> RedirectResponse:
+        cfg = state.runtime.cfg
+        # An HTML checkbox only submits when checked; treat presence as enabled.
+        is_enabled = enabled is not None and enabled not in ("", "0", "false", "off")
+        try:
+            max_live = int((max_live_agents or "0").strip() or "0")
+        except ValueError:
+            raise HTTPException(400, "max_live_agents must be an integer")
+        if max_live < 0:
+            raise HTTPException(400, "max_live_agents must be >= 0")
+        specs = _parse_resources_textarea(resources)
+        cfg = replace(
+            cfg,
+            auto_orchestrator_enabled=is_enabled,
+            auto_orchestrator_max_live_agents=max_live,
+            resources=specs,
+        )
+        try:
+            state.update_runtime(cfg)  # round-trip in write_config validates kinds/dupes
+        except ValueError as exc:
+            raise HTTPException(400, f"invalid orchestrator config: {exc}") from exc
+        return RedirectResponse("/settings", status_code=303)
+
+    @app.post("/settings/orchestrator/toggle")
+    async def action_orchestrator_toggle(next: str = Form("/")) -> RedirectResponse:
+        cfg = state.runtime.cfg
+        state.update_runtime(
+            replace(cfg, auto_orchestrator_enabled=not cfg.auto_orchestrator_enabled)
+        )
+        return RedirectResponse(next or "/", status_code=303)
 
     # ----- task actions ---------------------------------------------------
 
@@ -1358,6 +1449,30 @@ def create_app(
     async def compat_action_kill(task_id: str) -> RedirectResponse:
         ctx = state.current_project()
         return await action_kill(ctx.project.id, task_id)
+
+    @app.post("/projects/{project_id}/tasks/{task_id}/orchestrator-eligibility")
+    async def action_task_orchestrator_eligibility(
+        project_id: str,
+        task_id: str,
+        eligible: str | None = Form(None),
+    ) -> RedirectResponse:
+        """Toggle a task's auto-orchestrator candidacy from the board checkbox.
+
+        The checkbox submits ``eligible=1`` when checked and omits the field when
+        unchecked. Checked ⇒ remove the opt-out marker (eligible, the default);
+        unchecked ⇒ write the ``skip`` marker so admission ignores it.
+        """
+        ctx = state.get_project(project_id)
+        task = ctx.db.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, f"task {task_id!r} not found")
+        is_eligible = eligible is not None and eligible not in ("", "0", "false", "off")
+        current = task.description if task.description is not None else task.title
+        updated = replace_markdown_section(
+            current, AUTO_ORCHESTRATOR_HEADER, "" if is_eligible else "skip",
+        )
+        ctx.db.update_task(task_id, description=updated)
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
     @app.post("/projects/{project_id}/actions/task/{task_id}/worker-instructions")
     async def action_task_worker_instructions(
@@ -1522,9 +1637,14 @@ def _project_bootstrap_status(
     pending = plan.pending_operations
     if not pending:
         status = "bootstrapped"
-    elif any(op.status == "update" for op in pending):
+    elif any(op.status == "skip" for op in plan.operations):
+        # Some bootstrap artifacts are already in place but the template moved
+        # on (a file changed, or a newly-added artifact like .mcp.json is
+        # missing). That is staleness, regardless of whether the pending ops
+        # are updates or creates.
         status = "stale"
     else:
+        # Nothing has been applied yet -- a genuinely fresh project.
         status = "not bootstrapped"
     return status, len(pending), plan, ""
 
@@ -1593,7 +1713,68 @@ def _transition_config_for(
         pr_on_review=options.pr_on_review,
         default_shell=cfg.default_shell,
         plugin=resolved_plugin,
+        # Inject the reservation protocol only when a global pool is configured.
+        resource_protocol=RESOURCE_PROTOCOL if cfg.resources else "",
     )
+
+
+def _resource_spec_to_jsonable(spec: ResourceSpec) -> dict[str, Any]:
+    """Render a ResourceSpec for the Settings textarea (round-trips _parse)."""
+    if spec.instances:
+        return {
+            "kind": spec.kind,
+            "instances": [
+                {"name": inst.name, "target": dict(inst.target)} for inst in spec.instances
+            ],
+        }
+    return {"kind": spec.kind, "capacity": spec.capacity}
+
+
+def _parse_resources_textarea(raw: str) -> tuple[ResourceSpec, ...]:
+    """Parse the Settings resources textarea (a JSON list of resource specs).
+
+    Empty input ⇒ empty pool. Shallow shape checks here; the deeper
+    kind/instance/capacity validation happens on the round-trip write in
+    `write_config`. Raises HTTPException(400) on malformed input.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ()
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise HTTPException(400, f"resources must be valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise HTTPException(400, "resources must be a JSON list of resource specs")
+    specs: list[ResourceSpec] = []
+    for item in data:
+        if not isinstance(item, dict) or not str(item.get("kind", "")).strip():
+            raise HTTPException(400, "each resource spec needs a non-empty 'kind'")
+        kind = str(item["kind"]).strip()
+        raw_instances = item.get("instances")
+        if raw_instances:
+            if not isinstance(raw_instances, list):
+                raise HTTPException(400, f"resource {kind!r}: 'instances' must be a list")
+            instances: list[ResourceInstance] = []
+            for inst in raw_instances:
+                if not isinstance(inst, dict) or not str(inst.get("name", "")).strip():
+                    raise HTTPException(400, f"resource {kind!r}: each instance needs a 'name'")
+                target = inst.get("target") or {"kind": "local"}
+                if not isinstance(target, dict):
+                    raise HTTPException(400, f"resource {kind!r}: instance 'target' must be an object")
+                instances.append(
+                    ResourceInstance(name=str(inst["name"]).strip(), target=dict(target))
+                )
+            specs.append(ResourceSpec(kind=kind, instances=tuple(instances)))
+        elif item.get("capacity") is not None:
+            try:
+                capacity = int(item["capacity"])
+            except (TypeError, ValueError):
+                raise HTTPException(400, f"resource {kind!r}: 'capacity' must be an integer")
+            specs.append(ResourceSpec(kind=kind, capacity=capacity))
+        else:
+            raise HTTPException(400, f"resource {kind!r} needs either 'instances' or 'capacity'")
+    return tuple(specs)
 
 
 def shell_split(raw: str | None) -> tuple[str, ...] | None:
@@ -1763,3 +1944,26 @@ def _safe_session_chunk(value: str) -> str:
 
 def _safe_session_name(value: str) -> str:
     return _safe_session_chunk(value)
+
+
+def _planning_launcher(
+    cwd: str, argv: Sequence[str], default_shell: str | None,
+) -> str:
+    """Single pane line that cd's into `cwd` before launching the agent.
+
+    Mirrors AgtxTransitions._build_pane_launcher (minus the per-task
+    HARBOR_TASK_ID export): the cwd travels WITH the launch command, AND-chained
+    before the agent, so the cold-shell race that drops ensure_session's
+    separately-typed `cd` (see harbor/tmux.py) cannot strand a manual session in
+    the tmux server's home directory. Without this, a freshly-opened (cold) tmux
+    server swallows the typed `cd` and the bare agent command then runs in ~.
+    """
+    cwd_fwd = cwd.replace("\\", "/")
+    agent_quoted = " ".join(shlex.quote(p) for p in argv)
+    if default_shell:
+        # Login bash so the agent shim's PATH (coreutils) resolves, same as the
+        # worker launcher. `exec` replaces the shell so closing the agent ends
+        # the pane cleanly.
+        inner = f"cd '{cwd_fwd}' && exec {agent_quoted}"
+        return f'"{default_shell}" -lc "{inner}"'
+    return f"cd {shlex.quote(cwd_fwd)} && exec {agent_quoted}"

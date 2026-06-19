@@ -76,6 +76,23 @@ def test_seeded_task_descriptions_have_required_headers(
             assert _section(description, header)
 
 
+def test_seeded_tasks_are_opted_out_of_auto_orchestration(
+    tmp_path: Path,
+    isolated_harbor_data: Path,
+):
+    """Template setup tasks must not be auto-executed by the orchestrator."""
+    from harbor.agtx_transitions import task_orchestrator_optout
+
+    project = tmp_path / "blank"
+    project.mkdir()
+
+    apply_bootstrap(project)
+
+    tasks = _project_db(project).list_tasks()
+    assert tasks
+    assert all(task_orchestrator_optout(task) for task in tasks)
+
+
 def test_bootstrap_seed_is_idempotent_by_title(
     tmp_path: Path,
     isolated_harbor_data: Path,

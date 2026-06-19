@@ -50,6 +50,28 @@
   </div>
 </div>
 
+<div class="panel">
+  <div class="panel-body" style="display: flex; align-items: center; gap: 12px;">
+    <strong>Auto-orchestrator</strong>
+    <span class="pill {% if runtime.cfg.auto_orchestrator_enabled %}ok{% else %}warn{% endif %}">
+      {{ "ON" if runtime.cfg.auto_orchestrator_enabled else "OFF" }}
+    </span>
+    <span class="muted">
+      {% if runtime.cfg.auto_orchestrator_enabled %}
+        max live: {{ runtime.cfg.auto_orchestrator_max_live_agents or "∞" }} &middot;
+        resource kinds: {{ runtime.cfg.resources | length }}
+      {% else %}
+        ready Backlog tasks start automatically when ON
+      {% endif %}
+    </span>
+    <form method="post" action="/settings/orchestrator/toggle" class="inline" style="margin-left: auto;">
+      <input type="hidden" name="next" value="/projects/{{ project.project.id }}">
+      <button type="submit">{{ "Turn off" if runtime.cfg.auto_orchestrator_enabled else "Turn on" }}</button>
+    </form>
+    <a href="/settings" class="muted">configure</a>
+  </div>
+</div>
+
 {% if db_uninitialized %}
   <div class="panel">
     <h2>Project DB not initialized</h2>
@@ -257,6 +279,11 @@
   }
   .kanban .col h2 .count { font-weight: 400; }
   .kanban .col-body { padding: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .card-row { display: flex; align-items: flex-start; gap: 6px; }
+  .card-row .card { flex: 1 1 auto; min-width: 0; }
+  .orch-toggle { margin: 0; padding-top: 9px; flex: 0 0 auto; }
+  .orch-toggle input { cursor: pointer; width: 14px; height: 14px; }
+  .card-row.orch-skipped .card { opacity: 0.6; }
   .card {
     display: block;
     background: var(--code);

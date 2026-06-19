@@ -22,6 +22,9 @@ EXPECTED_TOOLS = {
     "create_tasks_batch",
     "update_task",
     "delete_task",
+    "list_resources",
+    "acquire_runtime",
+    "release_runtime",
 }
 
 

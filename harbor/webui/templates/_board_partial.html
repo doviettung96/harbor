@@ -72,28 +72,48 @@
       </h2>
       <div class="col-body">
         {% for task in col.tasks %}
-          <a
-            class="card task-card"
-            href="/projects/{{ project.project.id }}?task={{ task.id }}"
-            data-task-id="{{ task.id }}"
-            data-partial-url="/_partials/task/{{ task.id }}"
-          >
-            <span class="title">{{ task.title }}</span>
-            <span class="meta">
-              <code>{{ task.short_id }}</code>
-              <span class="agent">{{ task.agent }}</span>
-              {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
-              {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
-            </span>
-            {% if task.blocking_dependencies %}
-              <span class="deps">
-                <strong>Blocked by:</strong>
-                {% for dep in task.blocking_dependencies %}
-                  <code>{{ dep.short_id }}</code>{% if not loop.last %}, {% endif %}
-                {% endfor %}
-              </span>
+          <div class="card-row{% if col.key == 'backlog' and not (task | orchestrator_eligible) %} orch-skipped{% endif %}">
+            {% if col.key == "backlog" %}
+              <form
+                class="orch-toggle"
+                method="post"
+                action="/projects/{{ project.project.id }}/tasks/{{ task.id }}/orchestrator-eligibility"
+                title="Auto-orchestrator candidate — uncheck to skip this task"
+              >
+                <input
+                  type="checkbox"
+                  name="eligible"
+                  value="1"
+                  {% if task | orchestrator_eligible %}checked{% endif %}
+                  aria-label="Auto-orchestrator candidate for {{ task.title }}"
+                  onchange="this.form.requestSubmit()"
+                >
+              </form>
             {% endif %}
-          </a>
+            <a
+              class="card task-card"
+              href="/projects/{{ project.project.id }}?task={{ task.id }}"
+              data-task-id="{{ task.id }}"
+              data-partial-url="/_partials/task/{{ task.id }}"
+            >
+              <span class="title">{{ task.title }}</span>
+              <span class="meta">
+                <code>{{ task.short_id }}</code>
+                <span class="agent">{{ task.agent }}</span>
+                {% if task.session_name %}<span class="pill ok">tmux</span>{% endif %}
+                {% if task.escalation_note %}<span class="pill err">escalated</span>{% endif %}
+                {% if col.key == "backlog" and not (task | orchestrator_eligible) %}<span class="pill">skip</span>{% endif %}
+              </span>
+              {% if task.blocking_dependencies %}
+                <span class="deps">
+                  <strong>Blocked by:</strong>
+                  {% for dep in task.blocking_dependencies %}
+                    <code>{{ dep.short_id }}</code>{% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                </span>
+              {% endif %}
+            </a>
+          </div>
         {% else %}
           <div class="empty-col">No tasks</div>
         {% endfor %}
