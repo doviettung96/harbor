@@ -46,9 +46,20 @@
   <div class="panel">
     <h2>Actions</h2>
     <div class="panel-body">
-      <form method="post" action="/projects/{{ project.project.id }}/planning-sessions/{{ session_name }}/kill" class="inline">
-        <button type="submit" class="danger">Kill session</button>
-      </form>
+      {% if not live_session and manual_resumable %}
+        <form method="post" action="/projects/{{ project.project.id }}/planning-sessions/{{ session_name }}/resume" class="inline">
+          <button type="submit">Resume session</button>
+        </form>
+      {% endif %}
+      {% if live_session %}
+        <form method="post" action="/projects/{{ project.project.id }}/planning-sessions/{{ session_name }}/kill" class="inline">
+          <button type="submit" class="danger">Kill session</button>
+        </form>
+      {% elif manual_persisted %}
+        <form method="post" action="/projects/{{ project.project.id }}/planning-sessions/{{ session_name }}/dismiss" class="inline">
+          <button type="submit" class="danger">Dismiss</button>
+        </form>
+      {% endif %}
     </div>
   </div>
 </article>

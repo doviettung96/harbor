@@ -18,6 +18,7 @@ import shlex
 import subprocess
 import threading
 import time
+import uuid
 from queue import Empty, Queue
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -52,6 +53,7 @@ from ..agtx_client import (
 )
 from ..agtx_transitions import (
     AUTO_ORCHESTRATOR_HEADER,
+    CODEX_BYPASS_FLAGS,
     CODEX_GOAL_HEADER,
     DEFAULT_AGENT_COMMAND,
     DEFAULT_BASE_BRANCH,
@@ -677,21 +679,34 @@ def create_app(
             return False
         return session_name == _safe_session_name(session_name)
 
-    def _planning_sessions(ctx: ProjectContext) -> list[dict[str, str]]:
+    def _planning_sessions(ctx: ProjectContext) -> list[dict[str, Any]]:
+        # Persisted records survive a reboot (which kills the tmux server); live
+        # tmux sessions cover any started before persistence existed. Union them.
+        records: dict[str, dict[str, Any]] = {}
+        for rec in _load_manual_records(ctx):
+            name = rec.get("session_name") or ""
+            if _is_valid_planning_session(ctx, name):
+                records[name] = rec
         try:
             names = state.tmux.list_sessions()
         except Exception:
-            return []
-        if not isinstance(names, (list, tuple, set)):
-            return []
-        sessions: list[dict[str, str]] = []
-        for raw_name in names:
-            name = str(raw_name).strip()
-            if not _is_valid_planning_session(ctx, name):
-                continue
+            names = []
+        live: set[str] = set()
+        if isinstance(names, (list, tuple, set)):
+            for raw_name in names:
+                name = str(raw_name).strip()
+                if not _is_valid_planning_session(ctx, name):
+                    continue
+                live.add(name)
+                records.setdefault(name, {"session_name": name})
+        sessions: list[dict[str, Any]] = []
+        for name, rec in records.items():
             sessions.append({
                 "session_name": name,
                 "attach_command": _attach_command(name),
+                "live": name in live,
+                "agent": rec.get("agent") or rec.get("agent_kind") or "",
+                "resumable": bool(rec.get("launch_argv")),
             })
         sessions.sort(key=lambda s: s["session_name"], reverse=True)
         return sessions
@@ -729,6 +744,7 @@ def create_app(
         if not _is_valid_planning_session(ctx, session_name):
             raise HTTPException(400, "invalid planning session")
         live_session = _is_session_live(session_name)
+        record = _get_manual_record(ctx, session_name)
         return _template_context(
             request,
             selected=ctx,
@@ -738,6 +754,8 @@ def create_app(
             live_session=live_session,
             pane_capture="" if live_session else _capture_pane(session_name),
             attach_command=_attach_command(session_name),
+            manual_persisted=record is not None,
+            manual_resumable=bool(record and record.get("launch_argv")),
         )
 
     # ----- read pages -----------------------------------------------------
@@ -1230,7 +1248,11 @@ def create_app(
     ) -> RedirectResponse:
         ctx = state.get_project(project_id)
         session_name = _new_planning_session_name(ctx)
-        argv = _planning_agent_argv(ctx, agent)
+        base_argv = _planning_agent_argv(ctx, agent)
+        # For claude, fold in a caller-supplied --session-id so this session can
+        # later be resumed by id even though every manual session shares the
+        # project-root cwd (where --continue can't disambiguate).
+        argv, agent_kind, session_id = _manual_launch_plan(base_argv)
         # Fold the `cd` into the launch line (one atomic burst) rather than
         # trusting ensure_session's separately-typed `cd` to have landed: on a
         # cold tmux server that `cd` is lost and a bare agent command would open
@@ -1247,6 +1269,16 @@ def create_app(
             state.tmux.send_keys_literal(session_name, "", launcher, enter=True)
         except Exception as exc:
             raise HTTPException(500, f"planning session launch failed: {exc}") from exc
+        # Persist AFTER a successful launch so a failed spawn leaves no record.
+        _add_manual_record(ctx, {
+            "session_name": session_name,
+            "agent": (agent or "").strip(),
+            "agent_kind": agent_kind,
+            "session_id": session_id,
+            "launch_argv": argv,
+            "cwd": str(ctx.path),
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        })
         return RedirectResponse(
             f"/projects/{project_id}?planning={session_name}",
             status_code=303,
@@ -1261,6 +1293,48 @@ def create_app(
         if not _is_valid_planning_session(ctx, session_name):
             raise HTTPException(400, "invalid planning session")
         state.tmux.kill_session(session_name)
+        # Killing is an explicit "I'm done with this" — forget it so it doesn't
+        # linger as a dead, resumable record.
+        _remove_manual_record(ctx, session_name)
+        return RedirectResponse(f"/projects/{project_id}", status_code=303)
+
+    @app.post("/projects/{project_id}/planning-sessions/{session_name}/resume")
+    async def action_resume_planning_session(
+        project_id: str,
+        session_name: str,
+    ) -> RedirectResponse:
+        ctx = state.get_project(project_id)
+        if not _is_valid_planning_session(ctx, session_name):
+            raise HTTPException(400, "invalid planning session")
+        record = _get_manual_record(ctx, session_name)
+        if record is None or not record.get("launch_argv"):
+            raise HTTPException(404, "no persisted manual session to resume")
+        # Already live (e.g. a stray double-click) — just reopen its drawer.
+        if not _is_session_live(session_name):
+            cwd = str(record.get("cwd") or ctx.path)
+            resume_argv = _manual_resume_argv(record)
+            launcher = _planning_launcher(cwd, resume_argv, state.runtime.cfg.default_shell)
+            try:
+                state.tmux.ensure_session(
+                    session_name, cwd, default_shell=state.runtime.cfg.default_shell,
+                )
+                state.tmux.send_keys_literal(session_name, "", launcher, enter=True)
+            except Exception as exc:
+                raise HTTPException(500, f"planning session resume failed: {exc}") from exc
+        return RedirectResponse(
+            f"/projects/{project_id}?planning={session_name}",
+            status_code=303,
+        )
+
+    @app.post("/projects/{project_id}/planning-sessions/{session_name}/dismiss")
+    async def action_dismiss_planning_session(
+        project_id: str,
+        session_name: str,
+    ) -> RedirectResponse:
+        ctx = state.get_project(project_id)
+        if not _is_valid_planning_session(ctx, session_name):
+            raise HTTPException(400, "invalid planning session")
+        _remove_manual_record(ctx, session_name)
         return RedirectResponse(f"/projects/{project_id}", status_code=303)
 
     # ----- config actions -------------------------------------------------
@@ -1967,3 +2041,120 @@ def _planning_launcher(
         inner = f"cd '{cwd_fwd}' && exec {agent_quoted}"
         return f'"{default_shell}" -lc "{inner}"'
     return f"cd {shlex.quote(cwd_fwd)} && exec {agent_quoted}"
+
+
+# ----- manual-session persistence -----------------------------------------
+#
+# A manual ("planning") session is just a tmux session — unlike a task it has no
+# DB row, and it launches in the shared project root (not a single-tenant
+# worktree). So after a reboot kills the tmux server there is nothing to
+# enumerate it from, and the cwd-derived `--continue` trick that resumes tasks
+# can't tell two manual sessions apart. We fix both by recording each manual
+# session in a machine-local sidecar (under gitignored `.harbor/`) and launching
+# claude with a caller-supplied `--session-id` so it can later be resumed by id.
+
+_MANUAL_RECORDS_LOCK = threading.Lock()
+
+
+def _manual_sessions_path(ctx: ProjectContext) -> Path:
+    return ctx.path / ".harbor" / "manual-sessions.json"
+
+
+def _load_manual_records(ctx: ProjectContext) -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(_manual_sessions_path(ctx).read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        return []
+    sessions = raw.get("sessions") if isinstance(raw, dict) else None
+    if not isinstance(sessions, list):
+        return []
+    return [
+        s for s in sessions
+        if isinstance(s, dict) and isinstance(s.get("session_name"), str) and s["session_name"]
+    ]
+
+
+def _write_manual_records(ctx: ProjectContext, records: list[dict[str, Any]]) -> None:
+    path = _manual_sessions_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps({"version": 1, "sessions": records}, indent=2),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _add_manual_record(ctx: ProjectContext, record: dict[str, Any]) -> None:
+    with _MANUAL_RECORDS_LOCK:
+        kept = [r for r in _load_manual_records(ctx) if r.get("session_name") != record["session_name"]]
+        kept.append(record)
+        _write_manual_records(ctx, kept)
+
+
+def _remove_manual_record(ctx: ProjectContext, session_name: str) -> None:
+    with _MANUAL_RECORDS_LOCK:
+        kept = [r for r in _load_manual_records(ctx) if r.get("session_name") != session_name]
+        _write_manual_records(ctx, kept)
+
+
+def _get_manual_record(ctx: ProjectContext, session_name: str) -> dict[str, Any] | None:
+    for r in _load_manual_records(ctx):
+        if r.get("session_name") == session_name:
+            return r
+    return None
+
+
+def _manual_agent_kind(argv: Sequence[str]) -> str:
+    """Best-effort agent identity from the launch executable (claude/codex/...)."""
+    if not argv:
+        return ""
+    exe = Path(str(argv[0])).name.lower()
+    if exe.endswith(".exe"):
+        exe = exe[:-4]
+    for known in ("claude", "codex", "gemini", "copilot"):
+        if known in exe:
+            return known
+    return exe
+
+
+def _manual_launch_plan(base_argv: Sequence[str]) -> tuple[list[str], str, str]:
+    """Return (launch_argv, agent_kind, session_id) for a new manual session.
+
+    For claude, fold in a caller-supplied `--session-id` (or capture one the
+    user already configured) so the conversation can be resumed by id despite
+    every manual session sharing the project-root cwd. Other agents launch
+    unchanged and fall back to a cwd-scoped or cold resume.
+    """
+    argv = [str(a) for a in base_argv]
+    kind = _manual_agent_kind(argv)
+    session_id = ""
+    if kind == "claude" and argv:
+        if "--session-id" in argv:
+            idx = argv.index("--session-id")
+            if idx + 1 < len(argv):
+                session_id = argv[idx + 1]
+        else:
+            session_id = str(uuid.uuid4())
+            argv = [argv[0], "--session-id", session_id, *argv[1:]]
+    return argv, kind, session_id
+
+
+def _manual_resume_argv(record: dict[str, Any]) -> list[str]:
+    """Build the argv that resumes a persisted manual session in place."""
+    launch_argv = [str(a) for a in (record.get("launch_argv") or [])]
+    if not launch_argv:
+        return []
+    kind = record.get("agent_kind") or _manual_agent_kind(launch_argv)
+    session_id = str(record.get("session_id") or "")
+    exe = launch_argv[0]
+    if kind == "claude" and session_id:
+        # `--dangerously-skip-permissions` is NOT preserved across a resume, so
+        # re-pass it explicitly (mirrors the task resume command).
+        return [exe, "--resume", session_id, "--dangerously-skip-permissions"]
+    if kind == "codex":
+        bypass = [f for f in launch_argv[1:] if f in CODEX_BYPASS_FLAGS]
+        return [exe, "resume", "--last", *bypass]
+    # No per-session resume key (gemini/copilot, or claude with no id): the best
+    # we can do is cold-relaunch the original command.
+    return launch_argv
