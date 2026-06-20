@@ -765,7 +765,10 @@ def test_start_planning_session_launches_configured_agent_and_mutates_no_tasks(
 def test_start_planning_session_defaults_to_claude(app_client, tmp_path: Path):
     client, _, fake_tmux = app_client
 
-    r = client.post("/projects/default/planning-sessions", follow_redirects=False)
+    # Claude is launched with a caller-supplied --session-id so the manual
+    # session can later be resumed by id despite the shared project-root cwd.
+    with patch.object(server_mod.uuid, "uuid4", return_value="fixed-sid"):
+        r = client.post("/projects/default/planning-sessions", follow_redirects=False)
 
     assert r.status_code == 303
     session_name = r.headers["location"].split("planning=", 1)[1]
@@ -775,7 +778,7 @@ def test_start_planning_session_defaults_to_claude(app_client, tmp_path: Path):
         "",
         server_mod._planning_launcher(
             str(tmp_path.resolve()),
-            ["claude", "--dangerously-skip-permissions"],
+            ["claude", "--session-id", "fixed-sid", "--dangerously-skip-permissions"],
             default_shell,
         ),
         enter=True,
@@ -881,7 +884,8 @@ def test_start_planning_session_falls_back_for_empty_unknown_or_unmapped_agent(
 ):
     fake_tmux = MagicMock()
     fake_tmux.has_session.return_value = False
-    with patch.object(server_mod, "Tmux", return_value=fake_tmux):
+    with patch.object(server_mod, "Tmux", return_value=fake_tmux), \
+         patch.object(server_mod.uuid, "uuid4", return_value="fixed-sid"):
         app = create_app(
             tmp_path,
             db=memdb,
@@ -906,7 +910,7 @@ def test_start_planning_session_falls_back_for_empty_unknown_or_unmapped_agent(
     assert unknown.status_code == 303
     expected = server_mod._planning_launcher(
         str(tmp_path.resolve()),
-        ["claude", "--dangerously-skip-permissions"],
+        ["claude", "--session-id", "fixed-sid", "--dangerously-skip-permissions"],
         app.state.harbor.runtime.cfg.default_shell,
     )
     sent_commands = [call.args[2] for call in fake_tmux.send_keys_literal.call_args_list]
@@ -956,6 +960,205 @@ def test_kill_planning_session_rejects_non_harbor_name(app_client):
 
     assert r.status_code == 400
     fake_tmux.kill_session.assert_not_called()
+
+
+# ---- manual-session resume ------------------------------------------------
+
+
+def _sidecar(tmp_path: Path) -> Path:
+    return tmp_path / ".harbor" / "manual-sessions.json"
+
+
+def _start_manual_session(client, *, session_id: str = "fixed-sid") -> str:
+    with patch.object(server_mod.uuid, "uuid4", return_value=session_id):
+        r = client.post("/projects/default/planning-sessions", follow_redirects=False)
+    assert r.status_code == 303
+    return r.headers["location"].split("planning=", 1)[1]
+
+
+def test_start_planning_session_persists_resumable_record(app_client, tmp_path: Path):
+    client, _, _ = app_client
+    session_name = _start_manual_session(client, session_id="sid-persist")
+
+    records = json.loads(_sidecar(tmp_path).read_text(encoding="utf-8"))["sessions"]
+    assert len(records) == 1
+    rec = records[0]
+    assert rec["session_name"] == session_name
+    assert rec["agent_kind"] == "claude"
+    assert rec["session_id"] == "sid-persist"
+    assert rec["launch_argv"] == [
+        "claude", "--session-id", "sid-persist", "--dangerously-skip-permissions",
+    ]
+    assert rec["cwd"] == str(tmp_path.resolve())
+
+
+def test_dead_manual_session_renders_resume_pill_after_reboot(app_client, tmp_path: Path):
+    client, _, fake_tmux = app_client
+    session_name = _start_manual_session(client, session_id="sid-reboot")
+
+    # Reboot: the tmux server is empty, but the persisted record remains.
+    fake_tmux.list_sessions.return_value = []
+    fake_tmux.has_session.return_value = False
+
+    board = client.get("/projects/default")
+    assert board.status_code == 200
+    assert session_name in board.text
+    assert '<span class="pill warn">resume</span>' in board.text
+
+
+def test_dead_manual_session_detail_offers_resume_and_dismiss(app_client, tmp_path: Path):
+    client, _, fake_tmux = app_client
+    session_name = _start_manual_session(client, session_id="sid-detail")
+    fake_tmux.has_session.return_value = False
+
+    detail = client.get(f"/projects/default/_partials/planning/{session_name}")
+    assert detail.status_code == 200
+    assert f"/planning-sessions/{session_name}/resume" in detail.text
+    assert f"/planning-sessions/{session_name}/dismiss" in detail.text
+    # A dead session offers Dismiss, not Kill.
+    assert f"/planning-sessions/{session_name}/kill" not in detail.text
+
+
+def test_resume_planning_session_relaunches_claude_by_id(app_client, tmp_path: Path):
+    client, _, fake_tmux = app_client
+    session_name = _start_manual_session(client, session_id="sid-xyz")
+    default_shell = client.app.state.harbor.runtime.cfg.default_shell
+
+    fake_tmux.ensure_session.reset_mock()
+    fake_tmux.send_keys_literal.reset_mock()
+    fake_tmux.has_session.return_value = False  # reboot: session gone
+
+    r = client.post(
+        f"/projects/default/planning-sessions/{session_name}/resume",
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/projects/default?planning={session_name}"
+    fake_tmux.ensure_session.assert_called_once_with(
+        session_name, str(tmp_path.resolve()), default_shell=default_shell,
+    )
+    fake_tmux.send_keys_literal.assert_called_once_with(
+        session_name,
+        "",
+        server_mod._planning_launcher(
+            str(tmp_path.resolve()),
+            ["claude", "--resume", "sid-xyz", "--dangerously-skip-permissions"],
+            default_shell,
+        ),
+        enter=True,
+    )
+
+
+def test_resume_planning_session_noop_when_already_live(app_client, tmp_path: Path):
+    client, _, fake_tmux = app_client
+    session_name = _start_manual_session(client, session_id="sid-live")
+
+    fake_tmux.ensure_session.reset_mock()
+    fake_tmux.send_keys_literal.reset_mock()
+    fake_tmux.has_session.return_value = True  # still live
+
+    r = client.post(
+        f"/projects/default/planning-sessions/{session_name}/resume",
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    fake_tmux.ensure_session.assert_not_called()
+    fake_tmux.send_keys_literal.assert_not_called()
+
+
+def test_resume_planning_session_without_record_404s(app_client):
+    client, _, _ = app_client
+    r = client.post(
+        "/projects/default/planning-sessions/plan-default-20260101000000-000000001/resume",
+        follow_redirects=False,
+    )
+    assert r.status_code == 404
+
+
+def test_dismiss_planning_session_forgets_record(app_client, tmp_path: Path):
+    client, _, _ = app_client
+    session_name = _start_manual_session(client, session_id="sid-dismiss")
+    assert session_name in _sidecar(tmp_path).read_text(encoding="utf-8")
+
+    r = client.post(
+        f"/projects/default/planning-sessions/{session_name}/dismiss",
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    assert session_name not in _sidecar(tmp_path).read_text(encoding="utf-8")
+
+
+def test_kill_planning_session_forgets_record(app_client, tmp_path: Path):
+    client, _, fake_tmux = app_client
+    session_name = _start_manual_session(client, session_id="sid-kill")
+    assert session_name in _sidecar(tmp_path).read_text(encoding="utf-8")
+
+    r = client.post(
+        f"/projects/default/planning-sessions/{session_name}/kill",
+        follow_redirects=False,
+    )
+
+    assert r.status_code == 303
+    fake_tmux.kill_session.assert_called_once_with(session_name)
+    assert session_name not in _sidecar(tmp_path).read_text(encoding="utf-8")
+
+
+def test_manual_launch_plan_injects_session_id_for_claude():
+    with patch.object(server_mod.uuid, "uuid4", return_value="fixed"):
+        argv, kind, sid = server_mod._manual_launch_plan(
+            ["claude", "--dangerously-skip-permissions"]
+        )
+    assert kind == "claude"
+    assert sid == "fixed"
+    assert argv == ["claude", "--session-id", "fixed", "--dangerously-skip-permissions"]
+
+
+def test_manual_launch_plan_captures_preexisting_session_id():
+    argv, kind, sid = server_mod._manual_launch_plan(
+        ["claude", "--session-id", "abc", "-x"]
+    )
+    assert kind == "claude"
+    assert sid == "abc"
+    assert argv == ["claude", "--session-id", "abc", "-x"]
+
+
+def test_manual_launch_plan_leaves_non_claude_untouched():
+    argv, kind, sid = server_mod._manual_launch_plan(["codex", "--enable", "goals"])
+    assert kind == "codex"
+    assert sid == ""
+    assert argv == ["codex", "--enable", "goals"]
+
+
+def test_manual_resume_argv_claude_resumes_by_id():
+    rec = {
+        "agent_kind": "claude",
+        "session_id": "sid1",
+        "launch_argv": ["claude", "--session-id", "sid1", "--dangerously-skip-permissions"],
+    }
+    assert server_mod._manual_resume_argv(rec) == [
+        "claude", "--resume", "sid1", "--dangerously-skip-permissions",
+    ]
+
+
+def test_manual_resume_argv_codex_resumes_last_with_bypass():
+    rec = {
+        "agent_kind": "codex",
+        "session_id": "",
+        "launch_argv": ["codex", "--yolo", "--enable", "goals"],
+    }
+    assert server_mod._manual_resume_argv(rec) == ["codex", "resume", "--last", "--yolo"]
+
+
+def test_manual_resume_argv_unknown_agent_cold_relaunches():
+    rec = {
+        "agent_kind": "gemini",
+        "session_id": "",
+        "launch_argv": ["gemini", "--foo"],
+    }
+    assert server_mod._manual_resume_argv(rec) == ["gemini", "--foo"]
 
 
 def test_task_worker_instructions_save_updates_description(app_client):

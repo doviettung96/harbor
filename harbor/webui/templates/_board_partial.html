@@ -56,7 +56,11 @@
           data-partial-url="/projects/{{ project.project.id }}/_partials/planning/{{ s.session_name }}"
         >
           <span class="title">{{ s.session_name }}</span>
-          <span class="pill ok">tmux</span>
+          {% if s.live %}
+            <span class="pill ok">tmux</span>
+          {% else %}
+            <span class="pill warn">resume</span>
+          {% endif %}
         </a>
       {% endfor %}
     </div>
