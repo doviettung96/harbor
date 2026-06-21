@@ -37,19 +37,31 @@ The repo's `.harbor/runtime-target.json` is the default runtime — `target-runt
 
 ### Reserve a shared runtime before you test (resource broker)
 
-When the project has a global resource pool (`harbor.resources`), runtime resources — emulators, GPUs, app instances, game windows — are shared across **all** Harbor projects on this machine and arbitrated by one global pool, so two tasks never collide on the same physical resource. Do all your **implementation freely** (coding needs no resource). But **before anything that touches an exclusive runtime** — the build and the `## Verification Probes` / `## Related Tests` that `harbor-task-verify` runs — reserve it:
+Runtime resources — emulators, app instances, game windows — are shared across **all** Harbor projects on this machine. There is **no pre-declared pool**: you *discover* what exists and reserve one, so two tasks never collide on the same device. Do all your **implementation freely** (coding needs no resource). But **before anything that touches an exclusive runtime** — the build and the `## Verification Probes` / `## Related Tests` that `harbor-task-verify` runs — reserve it:
 
-1. `mcp__harbor__list_resources()` — see the kinds and how many are free.
-2. `mcp__harbor__acquire_runtime(project_id=<this task's project>, task_id=<this task's id>, kind="<the kind your tests need>", n=1)`. This is one atomic check-and-hold; it never busy-loops and never silently fails:
-   - `{"status": "granted"}` → its `target` has already been written into your worktree `.harbor/runtime-target.json`. Proceed to verification.
-   - `{"status": "queued"}` → the resource is busy and you are in line. **STOP: end your turn and do nothing further.** Harbor parks you and will message this pane when the resource is reserved for you (it writes your worktree override, then tells you to resume); pick up at "Hand Off to Verification" when that happens.
+1. **Discover** the candidates for the kind your task needs. For an Android emulator: run `adb devices` and collect every running serial (e.g. `emulator-5554`, `emulator-5556`). Use the serial as the canonical identity (`key`).
+2. **Reserve** one — pass ALL discovered candidates in a single call:
+   ```
+   mcp__harbor__acquire_runtime(
+     project_id=<this task's project>, task_id=<this task's id>, kind="emulator",
+     candidates=[
+       {"key": "emulator-5554", "target": {"kind": "emulator",
+          "emulator": {"name": "emulator-5554", "adb_port": 5554},
+          "probe_command": "adb -s emulator-5554 get-state"}},
+       {"key": "emulator-5556", "target": {"kind": "emulator",
+          "emulator": {"name": "emulator-5556", "adb_port": 5556},
+          "probe_command": "adb -s emulator-5556 get-state"}}])
+   ```
+   The broker atomically locks the first candidate not already held by another task and returns it — never busy-loops, never silently fails:
+   - `{"status": "granted", "key": ..., "target": ...}` → the target is already written into your worktree `.harbor/runtime-target.json`. Proceed to verification.
+   - `{"status": "queued"}` → every candidate is in use and you are in line. **STOP: end your turn and do nothing further.** Harbor parks you and will message this pane when one is reserved for you (it writes your worktree override, then tells you to resume); pick up at "Hand Off to Verification" then.
 3. `mcp__harbor__release_runtime(project_id=..., task_id=...)` the **instant** verification finishes — pass or fail — so the next queued task can proceed.
 
-Pick the `kind` your tests actually need (e.g. an `emulator` for game-RE probes, a `gpu_*` kind for ML). If you crash or the task leaves Running, Harbor reclaims your reservation automatically. **Never overwrite a `.harbor/runtime-target.json` that Harbor wrote for you** — it is the instance you were granted.
+`mcp__harbor__list_resources()` shows what's currently held / who's waiting if you want to gauge contention first. If you crash or the task leaves Running, Harbor reclaims your reservation automatically. **Never overwrite a `.harbor/runtime-target.json` that Harbor wrote for you** — it is the instance you were granted. Either run your probes via `target-runtime-exec` (it reads that file and exports `AWT_TARGET_*`) or use the granted serial directly.
 
-### No pool configured / manual runtime
+### Broker disabled / manual runtime
 
-If there is no global pool, there is nothing to acquire — `target-runtime-exec` uses the repo default. Only when `## Worker Instructions` names a *non-local* runtime target (an SSH host, a specific emulator, device, or game window that differs from the repo default) **and** no Harbor-written override is already present:
+If the resource broker is disabled, there is nothing to acquire — `target-runtime-exec` uses the repo default. Only when `## Worker Instructions` names a *non-local* runtime target (an SSH host, a specific emulator, device, or game window that differs from the repo default) **and** no Harbor-written override is already present:
 
 1. Read the repo's `.harbor/runtime-target.json` to see the current default.
 2. Write a worktree-local override at `<worktree>/.harbor/runtime-target.json` that matches the target described in `## Worker Instructions`. The worktree-local file shadows the repo default for this worktree only. Use `python scripts/shared/target_runtime.py target set-...` so the schema is validated.
@@ -70,7 +82,7 @@ If `## Worker Instructions` says `none` or names no runtime target, do nothing h
 
 When implementation is complete:
 
-1. **Reserve your runtime first** (see "Runtime Target"). If a resource pool is configured, call `mcp__harbor__acquire_runtime(...)` for the kind your tests need. If it returns `queued`, **stop and end your turn** — resume here once Harbor wakes you. If `granted` (or no pool is configured), continue.
+1. **Reserve your runtime first** (see "Runtime Target"). If the resource broker is enabled, discover candidates and call `mcp__harbor__acquire_runtime(...)` for the kind your tests need. If it returns `queued`, **stop and end your turn** — resume here once Harbor wakes you. If `granted` (or the broker is disabled), continue.
 2. Invoke the `harbor-task-verify` skill (or follow its steps inline). It runs the build (always, from `harbor.yml`), then each `## Verification Probes` and `## Related Tests` command via `target-runtime-exec`, and hard-blocks on any failure.
 3. **Release your runtime** as soon as verify finishes — pass or fail: `mcp__harbor__release_runtime(project_id=..., task_id=...)`. Do this before you escalate, fix-and-retry, or move forward, so a parked task isn't blocked while you iterate. (Re-acquire before the next verify run.)
 4. If verify reports `blocked` (classification `build`, `env`, or `acceptance`), fix the failure or stop and escalate. Do NOT move the task to Review while any check fails.
@@ -83,6 +95,6 @@ When implementation is complete:
 - Do not invent verification probes. The task author chose specific probes for a reason.
 - Do not move the task forward if the build, any probe, or any related test fails. The whole point of this workflow is to physically prevent green-light lying.
 - Do not weaken or delete a related test to make it pass. If a `## Related Tests` entry is flagged `(update: ...)`, change it to match the new intended behavior, justified against `## Acceptance Criteria`; if it fails for any other reason, fix the code, not the test.
-- If a resource pool is configured, never run the build/probes without first `acquire_runtime`-ing the runtime, and always `release_runtime` the moment verification finishes. When `acquire_runtime` returns `queued`, stop and end your turn — do not poll, busy-wait, or proceed without the resource.
+- If the resource broker is enabled, never run the build/probes without first discovering candidates and `acquire_runtime`-ing one, and always `release_runtime` the moment verification finishes. When `acquire_runtime` returns `queued`, stop and end your turn — do not poll, busy-wait, or proceed without the resource.
 - Do not touch other tasks, other worktrees, or the Harbor board outside this task.
 - If the task is escalated by you, write a clear `escalation_note` via `mcp__harbor__move_task(task_id, action="escalate_to_user", note="...")` so the user knows what to fix.

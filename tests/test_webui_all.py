@@ -216,15 +216,8 @@ def orch_client(tmp_path: Path, monkeypatch):
         "  auto_orchestrator:\n"
         "    enabled: true\n"
         "    max_live_agents: 2\n"
-        "  resources:\n"
-        "    - kind: emulator\n"
-        "      instances:\n"
-        "        - name: emu-a\n"
-        "          target: {kind: emulator, emulator: {adb_port: 5555}}\n"
-        "        - name: emu-b\n"
-        "          target: {kind: emulator, emulator: {adb_port: 5557}}\n"
-        "    - kind: gpu_gb\n"
-        "      capacity: 4\n",
+        "  resource_broker:\n"
+        "    enabled: true\n",
         encoding="utf-8",
     )
 
@@ -251,9 +244,8 @@ def test_settings_renders_orchestrator_panel_and_pool(orch_client):
     r = client.get("/settings")
     assert r.status_code == 200
     assert "Auto-orchestrator" in r.text
-    assert "Runtime resource pool" in r.text
-    assert "emu-a" in r.text          # pool serialized into the textarea
-    assert "gpu_gb" in r.text         # counted spec too
+    assert "resource broker" in r.text.lower()
+    assert 'name="resource_broker"' in r.text   # broker enable checkbox
     assert 'name="enabled"' in r.text
 
 

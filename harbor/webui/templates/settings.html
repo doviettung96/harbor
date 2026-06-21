@@ -60,14 +60,14 @@
     <p class="muted" style="margin-top: 0;">
       When enabled, Harbor scans every project and auto-pulls <em>ready</em> Backlog tasks into
       Planning. Agents then self-drive to Review; Done stays your manual acceptance gate.
-      Admission is resource-blind &mdash; workers reserve runtime (emulator / GPU / app instance)
-      at the test boundary from the global pool below.
+      Admission is resource-blind &mdash; workers reserve runtime themselves (see the resource
+      broker below).
     </p>
     <form method="post" action="/settings/orchestrator">
       <label class="muted" style="display: block; margin-bottom: 8px;">
         <input type="checkbox" name="enabled" value="1"
                {% if cfg.auto_orchestrator_enabled %}checked{% endif %}>
-        Enable auto-orchestrator
+        Enable auto-orchestrator (admission)
         <span class="pill {% if cfg.auto_orchestrator_enabled %}ok{% else %}warn{% endif %}">
           {{ "ON" if cfg.auto_orchestrator_enabled else "OFF" }}
         </span>
@@ -78,32 +78,31 @@
              value="{{ cfg.auto_orchestrator_max_live_agents }}"
              style="display: block; margin: 4px 0 10px; width: 8em;">
 
-      <label class="muted" for="orch_resources">Runtime resource pool (JSON list of specs)</label>
-      <textarea id="orch_resources" name="resources" spellcheck="false"
-                placeholder='[
-  {"kind": "emulator", "instances": [
-    {"name": "emu-a", "target": {"kind": "emulator", "emulator": {"name": "ld-0", "adb_port": 5555}, "probe_command": "adb -s 127.0.0.1:5555 get-state"}},
-    {"name": "emu-b", "target": {"kind": "emulator", "emulator": {"name": "ld-1", "adb_port": 5557}}}
-  ]},
-  {"kind": "gpu_gb", "capacity": 16}
-]'>{{ orchestrator_resources_text }}</textarea>
+      <label class="muted" style="display: block; margin: 12px 0 8px;">
+        <input type="checkbox" name="resource_broker" value="1"
+               {% if resource_broker_enabled %}checked{% endif %}>
+        Enable resource broker (runtime arbitration)
+        <span class="pill {% if resource_broker_enabled %}ok{% else %}warn{% endif %}">
+          {{ "ON" if resource_broker_enabled else "OFF" }}
+        </span>
+      </label>
       <p class="muted" style="margin-top: 4px;">
-        <code>instance</code> specs (emulators, app instances) are discrete &mdash; each instance's
-        <code>target</code> is written into the holding task's worktree
-        <code>.harbor/runtime-target.json</code>. <code>capacity</code> specs (GPU, CPU) are fungible
-        units. Empty pool &rarr; no arbitration (tasks test against the repo's own runtime-target).
+        No resources are declared. Workers <em>discover</em> what exists at the test boundary
+        (e.g. <code>adb devices</code>) and <code>acquire_runtime</code> atomically locks the first
+        free identity, so two tasks never collide on the same emulator / app instance. Busy &rarr;
+        the task parks (FIFO) and is woken when one frees. Independent of admission &mdash; applies
+        to manually-driven tasks too.
       </p>
       <div style="margin-top: 10px;">
         <button type="submit">Save orchestrator settings</button>
       </div>
     </form>
 
-    {% set held = orchestrator_permits | selectattr("state", "equalto", "held") | list %}
-    {% if held %}
-      <h3 style="margin-bottom: 6px;">Held permits</h3>
+    {% if orchestrator_permits %}
+      <h3 style="margin-bottom: 6px;">Held resources</h3>
       <table style="width: 100%; font-size: 0.9em;">
-        {% for permit in held %}
-          <tr><td><code>{{ permit.permit_id }}</code></td><td>{{ permit.label or permit.task_id }}</td></tr>
+        {% for permit in orchestrator_permits %}
+          <tr><td><code>{{ permit.instance_name or permit.permit_id }}</code></td><td>{{ permit.label or permit.task_id }}</td></tr>
         {% endfor %}
       </table>
     {% endif %}
@@ -111,7 +110,7 @@
       <h3 style="margin-bottom: 6px;">Parked (waiting for a resource)</h3>
       <table style="width: 100%; font-size: 0.9em;">
         {% for waiter in orchestrator_waiters %}
-          <tr><td><code>{{ waiter.kind }}</code> &times;{{ waiter.n }}</td><td>{{ waiter.task_id }}</td></tr>
+          <tr><td><code>{{ waiter.kind }}</code></td><td>{{ waiter.task_id }}</td></tr>
         {% endfor %}
       </table>
     {% endif %}

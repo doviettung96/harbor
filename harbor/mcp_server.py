@@ -9,6 +9,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from . import agtx_client as ac
+from . import resource_broker
 from .agtx_client import AgtxDb, Project, Task, strip_extended_length_prefix
 from .tmux import Tmux
 
@@ -322,86 +323,78 @@ class HarborMcpService:
         db.delete_task(task_id)
         return {"task_id": task_id, "deleted": True}
 
-    # ---- runtime resources (global pool) -------------------------------
+    # ---- runtime resources (dynamic claim-by-identity broker) ----------
 
     def list_resources(self) -> dict[str, Any]:
-        """Per-kind summary of the global runtime pool: free/held + queue depth.
+        """The live lock registry: currently-held identities and parked waiters.
 
-        An agent calls this before ``acquire_runtime`` to pick the kind its tests
-        need and gauge contention.
+        Supply is dynamic (agents discover candidates), so there is nothing to
+        enumerate as "free" — this reports what is taken and who is waiting.
         """
         db = self._global_db()
-        permits = db.list_permits()
-        waiters = db.list_waiters()
-        kinds: dict[str, dict[str, Any]] = {}
-        for permit in permits:
-            agg = kinds.setdefault(
-                permit.kind,
-                {"kind": permit.kind, "total": 0, "free": 0, "held": 0, "queued": 0,
-                 "instances": []},
-            )
-            agg["total"] += 1
-            agg["free" if permit.state == "free" else "held"] += 1
-            if permit.instance_name:
-                agg["instances"].append(permit.instance_name)
-        for waiter in waiters:
-            kinds.setdefault(
-                waiter.kind,
-                {"kind": waiter.kind, "total": 0, "free": 0, "held": 0, "queued": 0,
-                 "instances": []},
-            )["queued"] += 1
-        return {"resources": [kinds[k] for k in sorted(kinds)]}
+        held = [
+            {"kind": p.kind, "key": p.instance_name, "task_id": p.task_id, "label": p.label}
+            for p in db.list_permits()
+        ]
+        waiting = [
+            {"kind": w.kind, "task_id": w.task_id} for w in db.list_waiters()
+        ]
+        return {"held": held, "waiting": waiting}
 
     def acquire_runtime(
         self,
         project_id: str,
         task_id: str,
         kind: str,
-        n: int = 1,
+        candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Atomically hold `n` permits of `kind` for a task, or park it (FIFO).
+        """Atomically lock the first free candidate identity, or park (FIFO).
 
-        Granted ⇒ the instance target is written into the task worktree's
-        runtime-target override and returned. Busy ⇒ the task is enqueued and the
-        agent should end its turn; the supervisor wakes it on grant.
+        `candidates` is the list of ``{"key", "target"}`` the agent discovered.
+        Granted ⇒ the target is written into the task worktree's runtime-target
+        override and returned. All busy ⇒ the task is enqueued and the agent
+        should end its turn; the supervisor wakes it on grant.
         """
-        if n <= 0:
-            raise ValueError("n must be >= 1")
         project, db = self._project_db(project_id)
         task = db.get_task(task_id)
         if task is None:
             raise ValueError(f"task not found: {task_id}")
         lease_db = self._global_db()
 
-        # Idempotent: already holding enough of this kind ⇒ re-affirm the grant.
+        # Idempotent: already holding an identity of this kind ⇒ re-affirm.
         held = [p for p in lease_db.held_permits_for_task(task_id) if p.kind == kind]
-        if len(held) >= n:
-            return self._granted(project, task, held[:n], already_held=True)
+        if held:
+            return self._granted(project, task, held[0], already_held=True)
 
+        pairs = resource_broker.candidate_pairs(candidates)
+        if not pairs:
+            raise ValueError(
+                "candidates must be a non-empty list of {key, target} objects "
+                "(discover them first, e.g. via `adb devices`)"
+            )
         label = task.branch_name or f"task/{task.id[:8]}"
-        permits = lease_db.acquire_permits(
-            kind=kind, n=n, task_id=task_id, project_id=project.id, label=label,
+        permit = lease_db.claim_first_free(
+            kind=kind, candidates=pairs, task_id=task_id, project_id=project.id, label=label,
         )
-        if permits is not None:
-            return self._granted(project, task, permits, already_held=False)
+        if permit is not None:
+            return self._granted(project, task, permit, already_held=False)
 
         lease_db.enqueue_waiter(
             task_id=task_id,
             project_id=project.id,
             kind=kind,
-            n=n,
+            candidates_json=json.dumps(candidates),
             session_name=task.session_name,
         )
         position = lease_db.waiter_position(task_id, kind)
         return {
             "status": "queued",
             "kind": kind,
-            "n": n,
             "position": position,
             "message": (
-                f"No free {kind!r} permit. You are #{position} in line. End your "
-                "turn now and do nothing further — Harbor will message this "
-                "session when the resource is reserved for you."
+                f"Every {kind!r} candidate is in use. You are #{position} in line. "
+                "End your turn now and do nothing further — Harbor will message "
+                "this session when one is reserved for you."
             ),
         }
 
@@ -410,25 +403,23 @@ class HarborMcpService:
         project_id: str,
         task_id: str,
     ) -> dict[str, Any]:
-        """Free every permit held by a task and drop any pending waiter for it."""
+        """Release every identity held by a task and drop any pending waiter."""
         lease_db = self._global_db()
         released = lease_db.release_permits_for_task(task_id)
         lease_db.delete_waiters_for_task(task_id)
         return {"task_id": task_id, "released": released}
 
     def _granted(
-        self, project: Project, task: Task, permits: list[Any], *, already_held: bool,
+        self, project: Project, task: Task, permit: Any, *, already_held: bool,
     ) -> dict[str, Any]:
         from .agtx_transitions import write_target_override
 
         target = None
-        for permit in permits:
-            if permit.target_json:
-                try:
-                    target = json.loads(permit.target_json)
-                except (ValueError, TypeError):
-                    target = None
-                break
+        if permit.target_json:
+            try:
+                target = json.loads(permit.target_json)
+            except (ValueError, TypeError):
+                target = None
         if target is not None and task.worktree_path:
             write_target_override(
                 Path(strip_extended_length_prefix(project.path)),
@@ -438,10 +429,8 @@ class HarborMcpService:
         return {
             "status": "granted",
             "already_held": already_held,
-            "permits": [
-                {"permit_id": p.permit_id, "kind": p.kind, "instance": p.instance_name}
-                for p in permits
-            ],
+            "kind": permit.kind,
+            "key": permit.instance_name,
             "target": target,
             "message": (
                 "Resource reserved. Its target is written to "
@@ -562,9 +551,11 @@ def create_mcp_server(service: HarborMcpService | None = None) -> FastMCP:
 
     @mcp.tool()
     def acquire_runtime(
-        project_id: str, task_id: str, kind: str, n: int = 1,
+        project_id: str, task_id: str, kind: str, candidates: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        return svc.acquire_runtime(project_id=project_id, task_id=task_id, kind=kind, n=n)
+        return svc.acquire_runtime(
+            project_id=project_id, task_id=task_id, kind=kind, candidates=candidates,
+        )
 
     @mcp.tool()
     def release_runtime(project_id: str, task_id: str) -> dict[str, Any]:

@@ -59,7 +59,7 @@
     <span class="muted">
       {% if runtime.cfg.auto_orchestrator_enabled %}
         max live: {{ runtime.cfg.auto_orchestrator_max_live_agents or "∞" }} &middot;
-        resource kinds: {{ runtime.cfg.resources | length }}
+        broker: {{ "on" if runtime.cfg.resource_broker_enabled else "off" }}
       {% else %}
         ready Backlog tasks start automatically when ON
       {% endif %}

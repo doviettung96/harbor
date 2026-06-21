@@ -531,18 +531,18 @@ class ResourcePermit:
 
 @dataclass
 class ResourceWaiter:
-    """One parked task waiting for `n` free permits of `kind` (demand queue).
+    """One parked task waiting for any of its candidate identities of `kind`.
 
-    Ordered by `enqueued_at` (FIFO). The supervisor's grant pass pops the head
-    waiter for a kind when permits free up, acquires for it, writes the worktree
-    override, and wakes the parked agent via tmux. `session_name` is the wake
-    target.
+    Ordered by `enqueued_at` (FIFO). `candidates_json` is the JSON list of
+    ``{"key", "target"}`` the agent discovered; the supervisor's grant pass
+    re-attempts `claim_first_free` against it when an identity frees, then writes
+    the worktree override and wakes the parked agent via `session_name`.
     """
     waiter_id: str
     task_id: str
     project_id: str
     kind: str
-    n: int
+    candidates_json: str
     session_name: str | None
     enqueued_at: str
 
@@ -1043,73 +1043,22 @@ class AgtxDb:
             pass  # leaving an orphan db file is harmless; the row is what matters
         return True
 
-    # ---- Resource pool: permits (supply) + waiters (demand) — global index.db
+    # ---- Resource broker: held permits (lock registry) + waiters (demand)
     #
     # GLOBAL because a permit maps to a physical resource (an emulator on a given
-    # adb port, an app instance on a port, a GPU unit) that must not be
-    # double-booked across the projects running in parallel. Every method opens
-    # the global DB via `_open_global_create`, which runs `_GLOBAL_SCHEMA_SQL`
-    # (CREATE TABLE IF NOT EXISTS), so the tables self-create on first use.
-
-    def reconcile_resources(
-        self, permits: list[tuple[str, str, str | None, str | None]]
-    ) -> None:
-        """Sync the permit table to the configured pool.
-
-        `permits` is a list of (permit_id, kind, instance_name, target_json).
-        Free rows are inserted for new permits and their kind/instance/target
-        refreshed (config may have changed). Free rows whose permit is no longer
-        configured are deleted. `held` rows are never touched — an in-use permit
-        outlives a config edit until its task releases it.
-        """
-        conn = self._open_global_create()
-        try:
-            ids = [pid for pid, _, _, _ in permits]
-            for pid, kind, instance_name, target_json in permits:
-                conn.execute(
-                    "INSERT OR IGNORE INTO resource_permits "
-                    "(permit_id, kind, instance_name, target_json, task_id, project_id, "
-                    " state, label, leased_at, released_at) "
-                    "VALUES (?, ?, ?, ?, NULL, NULL, 'free', NULL, NULL, NULL)",
-                    (pid, kind, instance_name, target_json),
-                )
-                conn.execute(
-                    "UPDATE resource_permits "
-                    "SET kind = ?, instance_name = ?, target_json = ? "
-                    "WHERE permit_id = ? AND state = 'free'",
-                    (kind, instance_name, target_json, pid),
-                )
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                conn.execute(
-                    f"DELETE FROM resource_permits "
-                    f"WHERE state = 'free' AND permit_id NOT IN ({placeholders})",
-                    ids,
-                )
-            else:
-                conn.execute("DELETE FROM resource_permits WHERE state = 'free'")
-        finally:
-            conn.close()
+    # adb serial, an app instance on a port) that must not be double-booked across
+    # the projects running in parallel. There is NO declared supply: a permit row
+    # exists only while an identity is *held* — agents discover candidate
+    # identities and `claim_first_free` locks the first one not already held.
 
     def list_permits(self) -> list[ResourcePermit]:
+        """All currently-held permits (the live lock registry)."""
         conn = self._open_global_create()
         try:
             rows = conn.execute(
-                "SELECT * FROM resource_permits ORDER BY kind, permit_id"
+                "SELECT * FROM resource_permits WHERE state = 'held' ORDER BY kind, permit_id"
             ).fetchall()
             return [_permit_from_row(r) for r in rows]
-        finally:
-            conn.close()
-
-    def count_free_permits(self, kind: str) -> int:
-        conn = self._open_global_create()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n FROM resource_permits "
-                "WHERE kind = ? AND state = 'free'",
-                (kind,),
-            ).fetchone()
-            return int(row["n"]) if row else 0
         finally:
             conn.close()
 
@@ -1125,46 +1074,64 @@ class AgtxDb:
         finally:
             conn.close()
 
-    def acquire_permits(
-        self, *, kind: str, n: int, task_id: str, project_id: str, label: str | None,
-    ) -> list[ResourcePermit] | None:
-        """Atomically hold `n` free permits of `kind` for a task (all-or-nothing).
+    def claim_first_free(
+        self,
+        *,
+        kind: str,
+        candidates: list[tuple[str, str | None]],
+        task_id: str,
+        project_id: str,
+        label: str | None,
+    ) -> ResourcePermit | None:
+        """Atomically lock the first candidate identity not already held.
 
-        Returns the held permits, or None if fewer than `n` were free (in which
-        case nothing is held). A single `BEGIN IMMEDIATE` transaction makes the
-        select-then-update atomic, so two concurrent grantors cannot grab the
-        same permit nor over-allocate a counted resource.
+        `candidates` is an ordered list of (key, target_json) the agent
+        discovered. Returns the claimed ResourcePermit, or None if every
+        candidate is currently held. A single `BEGIN IMMEDIATE` transaction makes
+        the check-then-claim atomic, so two concurrent claimers (or a claimer and
+        the grant pass) can never lock the same identity — the second sees it
+        held and moves to the next candidate.
+
+        The permit_id is ``<kind>/<key>``; the row carries the candidate's
+        target_json so the grant/override step can pin the worktree to it.
         """
-        if n <= 0:
-            return []
+        if not candidates:
+            return None
         conn = self._open_global_create()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            rows = conn.execute(
-                "SELECT permit_id FROM resource_permits "
-                "WHERE kind = ? AND state = 'free' ORDER BY permit_id LIMIT ?",
-                (kind, n),
-            ).fetchall()
-            if len(rows) < n:
-                conn.execute("ROLLBACK")
-                return None
             now = _now_rfc3339()
-            chosen = [r["permit_id"] for r in rows]
-            for pid in chosen:
-                conn.execute(
-                    "UPDATE resource_permits "
-                    "SET task_id = ?, project_id = ?, state = 'held', label = ?, "
-                    "leased_at = ?, released_at = NULL "
-                    "WHERE permit_id = ?",
-                    (task_id, project_id, label, now, pid),
-                )
-            placeholders = ",".join("?" for _ in chosen)
-            got = conn.execute(
-                f"SELECT * FROM resource_permits WHERE permit_id IN ({placeholders})",
-                chosen,
-            ).fetchall()
-            conn.execute("COMMIT")
-            return [_permit_from_row(r) for r in got]
+            for key, target_json in candidates:
+                permit_id = f"{kind}/{key}"
+                existing = conn.execute(
+                    "SELECT state FROM resource_permits WHERE permit_id = ?",
+                    (permit_id,),
+                ).fetchone()
+                if existing is not None and existing["state"] == "held":
+                    continue  # taken by another task — try the next candidate
+                if existing is None:
+                    conn.execute(
+                        "INSERT INTO resource_permits "
+                        "(permit_id, kind, instance_name, target_json, task_id, "
+                        " project_id, state, label, leased_at, released_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'held', ?, ?, NULL)",
+                        (permit_id, kind, key, target_json, task_id, project_id, label, now),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE resource_permits "
+                        "SET kind = ?, instance_name = ?, target_json = ?, task_id = ?, "
+                        "project_id = ?, state = 'held', label = ?, leased_at = ?, "
+                        "released_at = NULL WHERE permit_id = ?",
+                        (kind, key, target_json, task_id, project_id, label, now, permit_id),
+                    )
+                got = conn.execute(
+                    "SELECT * FROM resource_permits WHERE permit_id = ?", (permit_id,)
+                ).fetchone()
+                conn.execute("COMMIT")
+                return _permit_from_row(got)
+            conn.execute("ROLLBACK")  # all candidates held
+            return None
         except Exception:
             try:
                 conn.execute("ROLLBACK")
@@ -1175,29 +1142,20 @@ class AgtxDb:
             conn.close()
 
     def release_permit(self, permit_id: str) -> None:
-        """Free a single permit, clearing its task binding."""
+        """Release a single held identity (delete the lock row)."""
         conn = self._open_global_create()
         try:
-            conn.execute(
-                "UPDATE resource_permits "
-                "SET task_id = NULL, project_id = NULL, state = 'free', "
-                "label = NULL, released_at = ? "
-                "WHERE permit_id = ?",
-                (_now_rfc3339(), permit_id),
-            )
+            conn.execute("DELETE FROM resource_permits WHERE permit_id = ?", (permit_id,))
         finally:
             conn.close()
 
     def release_permits_for_task(self, task_id: str) -> int:
-        """Free every permit held by a task. Returns how many were freed."""
+        """Release every identity held by a task. Returns how many were freed."""
         conn = self._open_global_create()
         try:
             cur = conn.execute(
-                "UPDATE resource_permits "
-                "SET task_id = NULL, project_id = NULL, state = 'free', "
-                "label = NULL, released_at = ? "
-                "WHERE task_id = ? AND state = 'held'",
-                (_now_rfc3339(), task_id),
+                "DELETE FROM resource_permits WHERE task_id = ? AND state = 'held'",
+                (task_id,),
             )
             return int(cur.rowcount or 0)
         finally:
@@ -1206,12 +1164,19 @@ class AgtxDb:
     # ---- waiters (FIFO demand queue) ----
 
     def enqueue_waiter(
-        self, *, task_id: str, project_id: str, kind: str, n: int, session_name: str | None,
+        self,
+        *,
+        task_id: str,
+        project_id: str,
+        kind: str,
+        candidates_json: str,
+        session_name: str | None,
     ) -> ResourceWaiter:
-        """Park a task waiting for `n` permits of `kind` (idempotent per task+kind).
+        """Park a task waiting for any of its candidate identities of `kind`.
 
-        Re-enqueuing the same (task, kind) refreshes `n`/`session_name` and keeps
-        the *original* enqueued_at so a retrying agent doesn't lose its place.
+        Idempotent per (task, kind): re-enqueuing refreshes the candidate list /
+        session but keeps the *original* enqueued_at so a retrying agent doesn't
+        lose its FIFO place.
         """
         conn = self._open_global_create()
         try:
@@ -1221,9 +1186,10 @@ class AgtxDb:
             ).fetchone()
             if existing is not None:
                 conn.execute(
-                    "UPDATE resource_waiters SET n = ?, session_name = ?, project_id = ? "
+                    "UPDATE resource_waiters "
+                    "SET candidates_json = ?, session_name = ?, project_id = ? "
                     "WHERE waiter_id = ?",
-                    (n, session_name, project_id, existing["waiter_id"]),
+                    (candidates_json, session_name, project_id, existing["waiter_id"]),
                 )
                 row = conn.execute(
                     "SELECT * FROM resource_waiters WHERE waiter_id = ?",
@@ -1233,9 +1199,9 @@ class AgtxDb:
             waiter_id = uuid.uuid4().hex
             conn.execute(
                 "INSERT INTO resource_waiters "
-                "(waiter_id, task_id, project_id, kind, n, session_name, enqueued_at) "
+                "(waiter_id, task_id, project_id, kind, candidates_json, session_name, enqueued_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (waiter_id, task_id, project_id, kind, n, session_name, _now_rfc3339()),
+                (waiter_id, task_id, project_id, kind, candidates_json, session_name, _now_rfc3339()),
             )
             row = conn.execute(
                 "SELECT * FROM resource_waiters WHERE waiter_id = ?", (waiter_id,)
@@ -1378,7 +1344,7 @@ def _waiter_from_row(row: sqlite3.Row) -> ResourceWaiter:
         task_id=row["task_id"],
         project_id=row["project_id"],
         kind=row["kind"],
-        n=int(_row_get(row, "n", 1) or 1),
+        candidates_json=_row_get(row, "candidates_json") or "[]",
         session_name=_row_get(row, "session_name"),
         enqueued_at=row["enqueued_at"],
     )
@@ -1450,13 +1416,13 @@ CREATE TABLE IF NOT EXISTS running_agents (
 );
 
 CREATE TABLE IF NOT EXISTS resource_permits (
-    permit_id     TEXT PRIMARY KEY,   -- "<kind>/<instance>" or "<kind>#<index>"; globally unique
-    kind          TEXT NOT NULL,      -- resource kind (emulator, gpu_gb, ...)
-    instance_name TEXT,               -- instance name (NULL for counted permits)
+    permit_id     TEXT PRIMARY KEY,   -- "<kind>/<identity>"; globally unique lock key
+    kind          TEXT NOT NULL,      -- resource kind (emulator, app, ...)
+    instance_name TEXT,               -- the claimed identity (e.g. emulator serial)
     target_json   TEXT,               -- runtime-target `target` subobject (NULL ⇒ no override)
-    task_id       TEXT,               -- NULL when free
+    task_id       TEXT,               -- holder
     project_id    TEXT,
-    state         TEXT NOT NULL,      -- 'free' | 'held'
+    state         TEXT NOT NULL,      -- 'held' (rows exist only while locked)
     label         TEXT,               -- task short-id / branch holding the permit
     leased_at     TEXT,
     released_at   TEXT
@@ -1464,13 +1430,13 @@ CREATE TABLE IF NOT EXISTS resource_permits (
 CREATE INDEX IF NOT EXISTS idx_permits_kind_state ON resource_permits(kind, state);
 
 CREATE TABLE IF NOT EXISTS resource_waiters (
-    waiter_id    TEXT PRIMARY KEY,
-    task_id      TEXT NOT NULL,
-    project_id   TEXT NOT NULL,
-    kind         TEXT NOT NULL,      -- kind of permit awaited
-    n            INTEGER NOT NULL DEFAULT 1,
-    session_name TEXT,               -- tmux wake target
-    enqueued_at  TEXT NOT NULL       -- park time → FIFO ordering
+    waiter_id       TEXT PRIMARY KEY,
+    task_id         TEXT NOT NULL,
+    project_id      TEXT NOT NULL,
+    kind            TEXT NOT NULL,   -- kind of resource awaited
+    candidates_json TEXT NOT NULL,   -- JSON list of {key, target} the agent discovered
+    session_name    TEXT,            -- tmux wake target
+    enqueued_at     TEXT NOT NULL    -- park time → FIFO ordering
 );
 CREATE INDEX IF NOT EXISTS idx_waiters_kind ON resource_waiters(kind, enqueued_at);
 """

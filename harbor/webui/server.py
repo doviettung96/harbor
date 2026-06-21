@@ -30,8 +30,6 @@ from fastapi.templating import Jinja2Templates
 
 from ..agent import (
     Config,
-    ResourceInstance,
-    ResourceSpec,
     global_runtime_config_path,
     load_config,
     load_runtime_config,
@@ -39,7 +37,7 @@ from ..agent import (
     write_runtime_config,
 )
 from ..auto_orchestrator import run_admission
-from ..resource_broker import RESOURCE_PROTOCOL, reconcile_pool, run_grants
+from ..resource_broker import RESOURCE_PROTOCOL, reconcile, run_grants
 from ..bootstrap import BootstrapPlan, apply_bootstrap, build_plan
 from ..agtx_client import (
     AgtxDb,
@@ -272,17 +270,17 @@ class GlobalTransitionSupervisor:
             except Exception:
                 log.exception("transition processing failed for project %s", ctx.project.id)
         # Two independent subsystems, run in order each tick:
-        #   1. Resource broker — reconcile the pool (materialize permits, reap
-        #      dead holders/waiters) and grant freed permits to parked waiters.
-        #      Runs whenever a pool is configured, regardless of admission, so
-        #      manually-driven workers still acquire/park/wake on resources.
+        #   1. Resource broker — reap crashed holders/waiters, then grant freed
+        #      identities to parked waiters. Runs whenever the broker is enabled,
+        #      regardless of admission, so manually-driven workers still
+        #      acquire/park/wake on resources.
         #   2. Auto-orchestrator — admission (auto-pull ready Backlog). Runs only
         #      when enabled, and never touches resources.
         cfg = self.state.runtime.cfg
-        if cfg.resources:
+        if cfg.resource_broker_enabled:
             lease_db = self.state.lease_db()
             try:
-                reconcile_pool(contexts, cfg, lease_db=lease_db)
+                reconcile(contexts, lease_db=lease_db)
             except Exception:
                 log.exception("resource-broker reconcile failed")
         if cfg.auto_orchestrator_enabled:
@@ -290,7 +288,7 @@ class GlobalTransitionSupervisor:
                 run_admission(contexts, cfg)
             except Exception:
                 log.exception("auto-orchestrator admission pass failed")
-        if cfg.resources:
+        if cfg.resource_broker_enabled:
             try:
                 run_grants(contexts, lease_db=self.state.lease_db(), tmux=self.state.tmux)
             except Exception:
@@ -1020,10 +1018,7 @@ def create_app(
                 cli_agent_override=state.options.agent_command is not None,
                 default_shell_text=cfg.default_shell or "",
                 plugin_text=cfg.harbor_plugin or "",
-                orchestrator_resources_text=json.dumps(
-                    [_resource_spec_to_jsonable(s) for s in cfg.resources],
-                    indent=2,
-                ) if cfg.resources else "",
+                resource_broker_enabled=cfg.resource_broker_enabled,
                 orchestrator_permits=state.lease_db().list_permits(),
                 orchestrator_waiters=state.lease_db().list_waiters(),
             ),
@@ -1403,26 +1398,26 @@ def create_app(
     async def action_settings_orchestrator(
         enabled: str | None = Form(None),
         max_live_agents: str = Form("0"),
-        resources: str = Form(""),
+        resource_broker: str | None = Form(None),
     ) -> RedirectResponse:
         cfg = state.runtime.cfg
         # An HTML checkbox only submits when checked; treat presence as enabled.
         is_enabled = enabled is not None and enabled not in ("", "0", "false", "off")
+        broker_enabled = resource_broker is not None and resource_broker not in ("", "0", "false", "off")
         try:
             max_live = int((max_live_agents or "0").strip() or "0")
         except ValueError:
             raise HTTPException(400, "max_live_agents must be an integer")
         if max_live < 0:
             raise HTTPException(400, "max_live_agents must be >= 0")
-        specs = _parse_resources_textarea(resources)
         cfg = replace(
             cfg,
             auto_orchestrator_enabled=is_enabled,
             auto_orchestrator_max_live_agents=max_live,
-            resources=specs,
+            resource_broker_enabled=broker_enabled,
         )
         try:
-            state.update_runtime(cfg)  # round-trip in write_config validates kinds/dupes
+            state.update_runtime(cfg)
         except ValueError as exc:
             raise HTTPException(400, f"invalid orchestrator config: {exc}") from exc
         return RedirectResponse("/settings", status_code=303)
@@ -1788,67 +1783,8 @@ def _transition_config_for(
         default_shell=cfg.default_shell,
         plugin=resolved_plugin,
         # Inject the reservation protocol only when a global pool is configured.
-        resource_protocol=RESOURCE_PROTOCOL if cfg.resources else "",
+        resource_protocol=RESOURCE_PROTOCOL if cfg.resource_broker_enabled else "",
     )
-
-
-def _resource_spec_to_jsonable(spec: ResourceSpec) -> dict[str, Any]:
-    """Render a ResourceSpec for the Settings textarea (round-trips _parse)."""
-    if spec.instances:
-        return {
-            "kind": spec.kind,
-            "instances": [
-                {"name": inst.name, "target": dict(inst.target)} for inst in spec.instances
-            ],
-        }
-    return {"kind": spec.kind, "capacity": spec.capacity}
-
-
-def _parse_resources_textarea(raw: str) -> tuple[ResourceSpec, ...]:
-    """Parse the Settings resources textarea (a JSON list of resource specs).
-
-    Empty input ⇒ empty pool. Shallow shape checks here; the deeper
-    kind/instance/capacity validation happens on the round-trip write in
-    `write_config`. Raises HTTPException(400) on malformed input.
-    """
-    text = (raw or "").strip()
-    if not text:
-        return ()
-    try:
-        data = json.loads(text)
-    except ValueError as exc:
-        raise HTTPException(400, f"resources must be valid JSON: {exc}") from exc
-    if not isinstance(data, list):
-        raise HTTPException(400, "resources must be a JSON list of resource specs")
-    specs: list[ResourceSpec] = []
-    for item in data:
-        if not isinstance(item, dict) or not str(item.get("kind", "")).strip():
-            raise HTTPException(400, "each resource spec needs a non-empty 'kind'")
-        kind = str(item["kind"]).strip()
-        raw_instances = item.get("instances")
-        if raw_instances:
-            if not isinstance(raw_instances, list):
-                raise HTTPException(400, f"resource {kind!r}: 'instances' must be a list")
-            instances: list[ResourceInstance] = []
-            for inst in raw_instances:
-                if not isinstance(inst, dict) or not str(inst.get("name", "")).strip():
-                    raise HTTPException(400, f"resource {kind!r}: each instance needs a 'name'")
-                target = inst.get("target") or {"kind": "local"}
-                if not isinstance(target, dict):
-                    raise HTTPException(400, f"resource {kind!r}: instance 'target' must be an object")
-                instances.append(
-                    ResourceInstance(name=str(inst["name"]).strip(), target=dict(target))
-                )
-            specs.append(ResourceSpec(kind=kind, instances=tuple(instances)))
-        elif item.get("capacity") is not None:
-            try:
-                capacity = int(item["capacity"])
-            except (TypeError, ValueError):
-                raise HTTPException(400, f"resource {kind!r}: 'capacity' must be an integer")
-            specs.append(ResourceSpec(kind=kind, capacity=capacity))
-        else:
-            raise HTTPException(400, f"resource {kind!r} needs either 'instances' or 'capacity'")
-    return tuple(specs)
 
 
 def shell_split(raw: str | None) -> tuple[str, ...] | None:

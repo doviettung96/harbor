@@ -108,44 +108,11 @@ _BUILTIN: dict[str, dict[str, Any]] = {
 # target-runtime helper (which lives outside the harbor package).
 RESOURCE_TARGET_KINDS = frozenset({"local", "emulator", "device", "game_window"})
 
-@dataclass(frozen=True)
-class ResourceInstance:
-    """One discrete, exclusive instance of an `instance`-flavored resource.
-
-    `target` is a full runtime-target `target` subobject (the value that lives
-    under the top-level `target` key of `.harbor/runtime-target.json`): a `kind`
-    plus optional emulator/device/game_window subobjects and a `probe_command`.
-    When an agent acquires this instance, Harbor writes its `target` into the
-    task's worktree override so the build/probe run against this instance's own
-    emulator / app instance / port.
-    """
-    name: str
-    target: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class ResourceSpec:
-    """One kind of runtime resource in the global pool.
-
-    Two flavors, distinguished by which field is populated:
-
-    - **instance** (``instances`` non-empty): discrete, exclusive, identity
-      matters. Each instance is a separately leasable permit carrying its own
-      runtime-target. Examples: emulators (each on its own adb port), app
-      instances (each on its own port), accounts.
-    - **counted** (``capacity`` > 0): fungible capacity, no identity, pure
-      admission gating — a task draws down ``n`` units. Examples: GPU memory
-      (in GB), CPU cores, a bounded number of spawnable game windows.
-
-    Exactly one of ``instances`` / ``capacity`` is set; the other is empty/zero.
-    """
-    kind: str
-    instances: tuple[ResourceInstance, ...] = ()
-    capacity: int = 0
-
-    @property
-    def flavor(self) -> str:
-        return "instance" if self.instances else "counted"
+# NOTE: runtime resources are no longer declared in config. The resource broker
+# (harbor.resource_broker) is a dynamic claim-by-identity lock registry: agents
+# DISCOVER what exists at the test boundary (e.g. `adb devices`) and reserve one
+# via the acquire_runtime MCP tool, which atomically locks the first free
+# identity. There is no hand-written pool — only a single enable flag below.
 
 
 @dataclass(frozen=True)
@@ -200,14 +167,14 @@ class Config:
     # tmux windows. 0 ⇒ unlimited (test-phase resource contention self-throttles
     # the rest). This is NOT a resource lease — it only bounds spawn fan-out.
     auto_orchestrator_max_live_agents: int = 0
-    # The global runtime-resource pool (supply). A list of typed ResourceSpec —
-    # `instance` resources (emulators, app instances, accounts) and `counted`
-    # resources (gpu_gb, cpu_core, game windows). Agents self-serve permits from
-    # this pool at the test boundary; the pool is the single global arbiter so a
-    # physical resource is never double-booked across the projects run in
-    # parallel. Empty ⇒ no arbitration (every task tests against the repo's own
-    # runtime-target, i.e. today's serial behavior).
-    resources: tuple[ResourceSpec, ...] = ()
+    # Resource broker: dynamic claim-by-identity arbitration of runtime resources
+    # (emulators, app instances, game windows) across all projects. No resources
+    # are declared — agents discover candidates and acquire_runtime locks the
+    # first free one. This single flag turns the whole mechanism on/off (protocol
+    # injection + the supervisor's reconcile/grant passes). Defaults ON so it
+    # works with zero configuration; set harbor.resource_broker.enabled=false to
+    # disable. Read from the *global* runtime config.
+    resource_broker_enabled: bool = True
 
     def get(self, name: str | None) -> AgentProfile:
         key = name or self.default_profile
@@ -336,108 +303,19 @@ def _parse_auto_orchestrator(raw: Any) -> tuple[bool, int]:
     return enabled, max_live
 
 
-def _parse_resources(raw: Any) -> tuple[ResourceSpec, ...]:
-    """Parse `harbor.resources` — the global runtime-resource pool.
+def _parse_resource_broker(raw: Any) -> bool:
+    """Parse `harbor.resource_broker: {enabled}` → enabled bool (default True).
 
-    `harbor.yml`:
-        harbor:
-          resources:
-            - kind: emulator            # instance flavor (discrete, exclusive)
-              instances:
-                - name: emu-a
-                  target:
-                    kind: emulator
-                    emulator: { name: ldplayer-0, adb_port: 5555 }
-                    probe_command: "adb -s 127.0.0.1:5555 get-state"
-                - name: emu-b
-                  target: { kind: emulator, emulator: { adb_port: 5557 } }
-            - kind: gpu_gb              # counted flavor (fungible capacity)
-              capacity: 16
-
-    Each entry needs a non-empty unique `kind` and *exactly one* of `instances`
-    (a non-empty list of `{name, target}`) or `capacity` (a positive int).
-    Instance `target.kind`, when present, must be a known runtime-target kind.
+    The broker arbitrates runtime resources by dynamic claim-by-identity; there
+    is nothing to declare, only this on/off switch.
     """
     if raw is None:
-        return ()
-    if not isinstance(raw, (list, tuple)):
+        return True
+    if not isinstance(raw, dict):
         raise ValueError(
-            f"harbor.resources must be a list of resource specs, got {type(raw).__name__}"
+            f"harbor.resource_broker must be a mapping, got {type(raw).__name__}"
         )
-    specs: list[ResourceSpec] = []
-    seen_kinds: set[str] = set()
-    for i, item in enumerate(raw):
-        if not isinstance(item, dict):
-            raise ValueError(
-                f"harbor.resources[{i}] must be a mapping, got {type(item).__name__}"
-            )
-        kind = str(item.get("kind", "")).strip()
-        if not kind:
-            raise ValueError(f"harbor.resources[{i}] is missing a non-empty 'kind'")
-        if kind in seen_kinds:
-            raise ValueError(f"harbor.resources has duplicate kind {kind!r}")
-        seen_kinds.add(kind)
-
-        raw_instances = item.get("instances")
-        has_capacity = "capacity" in item and item.get("capacity") is not None
-        if raw_instances and has_capacity:
-            raise ValueError(
-                f"harbor.resources[{i}] ({kind!r}) sets both 'instances' and 'capacity'; pick one"
-            )
-        if not raw_instances and not has_capacity:
-            raise ValueError(
-                f"harbor.resources[{i}] ({kind!r}) needs either 'instances' or 'capacity'"
-            )
-
-        if raw_instances:
-            if not isinstance(raw_instances, (list, tuple)):
-                raise ValueError(
-                    f"harbor.resources[{i}].instances must be a list, "
-                    f"got {type(raw_instances).__name__}"
-                )
-            instances: list[ResourceInstance] = []
-            seen_names: set[str] = set()
-            for j, inst in enumerate(raw_instances):
-                if not isinstance(inst, dict):
-                    raise ValueError(
-                        f"harbor.resources[{i}].instances[{j}] must be a mapping"
-                    )
-                name = str(inst.get("name", "")).strip()
-                if not name:
-                    raise ValueError(
-                        f"harbor.resources[{i}].instances[{j}] is missing a non-empty 'name'"
-                    )
-                if name in seen_names:
-                    raise ValueError(
-                        f"harbor.resources[{i}] ({kind!r}) has duplicate instance name {name!r}"
-                    )
-                seen_names.add(name)
-                target = inst.get("target") or {"kind": "local"}
-                if not isinstance(target, dict):
-                    raise ValueError(
-                        f"harbor.resources[{i}].instances[{j}].target must be a mapping"
-                    )
-                tkind = target.get("kind", "local")
-                if tkind not in RESOURCE_TARGET_KINDS:
-                    raise ValueError(
-                        f"harbor.resources[{i}].instances[{j}].target.kind must be one of "
-                        f"{sorted(RESOURCE_TARGET_KINDS)}, got {tkind!r}"
-                    )
-                instances.append(ResourceInstance(name=name, target=dict(target)))
-            specs.append(ResourceSpec(kind=kind, instances=tuple(instances)))
-        else:
-            try:
-                capacity = int(item["capacity"])
-            except (TypeError, ValueError):
-                raise ValueError(
-                    f"harbor.resources[{i}] ({kind!r}) capacity must be an integer"
-                )
-            if capacity <= 0:
-                raise ValueError(
-                    f"harbor.resources[{i}] ({kind!r}) capacity must be a positive integer"
-                )
-            specs.append(ResourceSpec(kind=kind, capacity=capacity))
-    return tuple(specs)
+    return bool(raw.get("enabled", True))
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> Config:
@@ -520,7 +398,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
     auto_orchestrator_enabled, auto_orchestrator_max_live_agents = _parse_auto_orchestrator(
         harbor_section.get("auto_orchestrator")
     )
-    resources = _parse_resources(harbor_section.get("resources"))
+    resource_broker_enabled = _parse_resource_broker(harbor_section.get("resource_broker"))
     return Config(
         profiles=profiles,
         default_profile=default,
@@ -532,7 +410,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         harbor_build=harbor_build,
         auto_orchestrator_enabled=auto_orchestrator_enabled,
         auto_orchestrator_max_live_agents=auto_orchestrator_max_live_agents,
-        resources=resources,
+        resource_broker_enabled=resource_broker_enabled,
     )
 
 
@@ -553,18 +431,6 @@ def _profile_to_dict(profile: AgentProfile) -> dict[str, Any]:
     if profile.launch_template:
         data["launch_template"] = profile.launch_template
     return data
-
-
-def _resource_spec_to_dict(spec: ResourceSpec) -> dict[str, Any]:
-    if spec.instances:
-        return {
-            "kind": spec.kind,
-            "instances": [
-                {"name": inst.name, "target": dict(inst.target)}
-                for inst in spec.instances
-            ],
-        }
-    return {"kind": spec.kind, "capacity": spec.capacity}
 
 
 def config_to_dict(cfg: Config) -> dict[str, Any]:
@@ -600,8 +466,9 @@ def config_to_dict(cfg: Config) -> dict[str, Any]:
         harbor["auto_orchestrator"] = {"enabled": cfg.auto_orchestrator_enabled}
         if cfg.auto_orchestrator_max_live_agents:
             harbor["auto_orchestrator"]["max_live_agents"] = cfg.auto_orchestrator_max_live_agents
-    if cfg.resources:
-        harbor["resources"] = [_resource_spec_to_dict(spec) for spec in cfg.resources]
+    # Only emit resource_broker when disabled (default is enabled) to keep config minimal.
+    if not cfg.resource_broker_enabled:
+        harbor["resource_broker"] = {"enabled": False}
     if harbor:
         data["harbor"] = harbor
     return data
