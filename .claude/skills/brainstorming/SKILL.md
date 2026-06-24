@@ -5,14 +5,14 @@ description: "You MUST use this before any creative work - creating features, bu
 
 # Brainstorming Ideas Into Designs
 
-Help turn ideas into a settled Beads-ready design through natural collaborative dialogue.
+Help turn ideas into a settled plan-ready design through natural collaborative dialogue.
 
-In this template, `brainstorming` is the primary discuss stage. Use it to lock intent, separate decisions from assumptions, and identify any factual unknowns early enough that `planner-research` can resolve them before Beads are created.
+In this template, `brainstorming` is the primary discuss stage. Use it to lock intent, separate decisions from assumptions, and identify any factual unknowns early enough that open questions can be resolved before the plan is finalized.
 
-Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design, resolve normal uncertainty, and hand back a settled recommendation for the single bead-creation confirmation in `plan-beads`.
+Start by understanding the current project context, then ask questions one at a time to refine the idea. Once you understand what you're building, present the design, resolve normal uncertainty, and hand back a settled recommendation for the planning step.
 
 <HARD-GATE>
-This is a planner skill. Do NOT invoke any implementation skill, write any code, scaffold any project, claim a bead, or take any implementation action. The goal is a settled design that can flow into `planner-research` or `beads-planner`, not executor planning.
+This is a planner skill. Do NOT invoke any implementation skill, write any code, scaffold any project, take any implementation action, or pick up a task for implementation. The goal is a settled design that can flow into the planning step, not executor planning.
 </HARD-GATE>
 
 ## Anti-Pattern: "This Is Too Simple To Need A Design"
@@ -28,9 +28,9 @@ You MUST create a task for each of these items and complete them in order:
 3. **Ask clarifying questions** - one at a time, understand purpose, constraints, and success criteria
 4. **Propose 2-3 approaches** - with trade-offs and your recommendation
 5. **State what is already decided vs still unknown** - explicitly separate locked decisions, assumptions, and factual unknowns
-6. **Use `planner-research` if needed** - only when unresolved factual unknowns would weaken the design or produce poor Beads
+6. **Resolve factual unknowns if needed** - only when unresolved factual unknowns would weaken the design or produce a poor plan
 7. **Present the settled design** - in sections scaled to complexity, including swarm-relevant constraints when parallel execution may matter
-8. **Stop at planner handoff** - hand the settled design back to `plan-beads`, `planner-research`, or `beads-planner`
+8. **Stop at planner handoff** - hand the settled design back to the planning step
 
 ## Process Flow
 
@@ -42,11 +42,11 @@ digraph brainstorming {
     "Ask clarifying questions" [shape=box];
     "Propose 2-3 approaches" [shape=box];
     "State decisions and unknowns" [shape=box];
-    "Need planner research?" [shape=diamond];
-    "Invoke planner-research" [shape=box];
+    "Need more research?" [shape=diamond];
+    "Resolve open questions" [shape=box];
     "Present design sections" [shape=box];
     "Design settled enough?" [shape=diamond];
-    "Hand back to plan-beads/beads-planner" [shape=doublecircle];
+    "Hand back to planning step" [shape=doublecircle];
 
     "Explore project context" -> "Visual questions ahead?";
     "Visual questions ahead?" -> "Offer Visual Companion\n(own message, no other content)" [label="yes"];
@@ -54,17 +54,17 @@ digraph brainstorming {
     "Offer Visual Companion\n(own message, no other content)" -> "Ask clarifying questions";
     "Ask clarifying questions" -> "Propose 2-3 approaches";
     "Propose 2-3 approaches" -> "State decisions and unknowns";
-    "State decisions and unknowns" -> "Need planner research?";
-    "Need planner research?" -> "Invoke planner-research" [label="yes"];
-    "Need planner research?" -> "Present design sections" [label="no"];
-    "Invoke planner-research" -> "Present design sections";
+    "State decisions and unknowns" -> "Need more research?";
+    "Need more research?" -> "Resolve open questions" [label="yes"];
+    "Need more research?" -> "Present design sections" [label="no"];
+    "Resolve open questions" -> "Present design sections";
     "Present design sections" -> "Design settled enough?";
     "Design settled enough?" -> "Present design sections" [label="no, revise"];
-    "Design settled enough?" -> "Hand back to plan-beads/beads-planner" [label="yes"];
+    "Design settled enough?" -> "Hand back to planning step" [label="yes"];
 }
 ```
 
-**The terminal state is planner handoff.** Do NOT invoke `writing-plans`, `swarm-epic`, `beads-claim`, or any implementation skill from `brainstorming`.
+**The terminal state is planner handoff.** Do NOT invoke `writing-plans` or any implementation skill from `brainstorming`.
 
 ## The Process
 
@@ -81,7 +81,7 @@ digraph brainstorming {
   - goals and success criteria
   - decisions that are already locked
   - assumptions that are still provisional
-  - factual unknowns that need research before planning can be trusted
+  - factual unknowns that need resolving before planning can be trusted
 
 **Exploring approaches:**
 
@@ -89,17 +89,17 @@ digraph brainstorming {
 - Present options conversationally with your recommendation and reasoning.
 - Lead with your recommended option and explain why.
 
-**Escalating to planner research:**
+**Escalating to research:**
 
-- Use `planner-research` only for factual unknowns that materially affect the design or bead decomposition.
+- Resolve factual unknowns only when they materially affect the design or task decomposition.
 - Good triggers: unknown integration points, unclear library or platform behavior, uncertain repo conventions, external API constraints, or open feasibility questions.
-- Do not use `planner-research` just to avoid asking the user preference questions.
-- After research, fold findings into the settled design and later bead descriptions or notes. Do not create a separate planning tracker or second source of truth.
+- Do not research just to avoid asking the user preference questions.
+- After research, fold findings into the settled design and later task descriptions or notes. Do not create a separate planning tracker or second source of truth.
 
 **Presenting the design:**
 
 - Once you believe you understand what you're building, present the design.
-- The design should leave the next planner skill enough structure to create high-quality Beads without replaying the full conversation.
+- The design should leave the planning step enough structure to create a high-quality plan without replaying the full conversation.
 - Scale each section to its complexity: a few sentences if straightforward, up to 200-300 words if nuanced.
 - Ask for correction only when something appears wrong, ambiguous, or preference-sensitive enough that the planner should not choose on the user's behalf.
 - Cover: architecture, components, data flow, error handling, testing, and swarm-relevant constraints when the work may be parallelized.
@@ -128,14 +128,14 @@ After the design is settled:
    - locked decisions
    - assumptions
    - factual unknowns, if any remain
-3. If factual unknowns remain that still matter, hand off to `planner-research`.
-4. Otherwise hand off to `beads-planner`, usually through `plan-beads`.
+3. If factual unknowns remain that still matter, resolve them before handing off.
+4. Otherwise hand off to the planning step.
 
 Do not:
 
 - write or commit a spec document as part of this template workflow
 - invoke `writing-plans`
-- claim beads
+- pick up a task for implementation
 - start execution
 
 ## Key Principles
@@ -144,7 +144,7 @@ Do not:
 - **Multiple choice preferred** - Easier to answer than open-ended when possible.
 - **YAGNI ruthlessly** - Remove unnecessary features from all designs.
 - **Explore alternatives** - Always propose 2-3 approaches before settling.
-- **Incremental validation** - Present design, tighten weak spots, and reserve the explicit confirmation gate for bead creation in `plan-beads`.
+- **Incremental validation** - Present design, tighten weak spots, and reserve the explicit confirmation gate for the planning step.
 - **Be flexible** - Go back and clarify when something does not make sense.
 
 ## Visual Companion
