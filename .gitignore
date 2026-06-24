@@ -9,3 +9,6 @@ harbor.yml
 [.]agtx/shared-instructions.md
 .worktrees/
 .superpowers/
+.claude/
+.codex/
+.mcp.json
